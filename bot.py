@@ -3,15 +3,25 @@ import re
 import random
 import sqlite3
 import asyncio
+import logging
+
 from aiogram import Bot, Dispatcher, types
+from aiogram.filters import Command
+
+logging.basicConfig(level=logging.INFO)
+logging.info("🚀 bot.py started")
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 if not BOT_TOKEN:
     raise RuntimeError("BOT_TOKEN is not set")
 
-# --- Bot ---
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
+
+# --- /start ---
+@dp.message(Command("start"))
+async def start(message: types.Message):
+    await message.answer("✅ Бот жив. Рейтинг работает.")
 
 # --- Database ---
 conn = sqlite3.connect("ratings.db")
@@ -50,21 +60,16 @@ def change_rating(chat_id: int, user_id: int, delta: int) -> int:
     conn.commit()
     return rating
 
-# --- Emojis ---
 POSITIVE = ["😎", "🔥", "💪", "🚀", "✨", "😁", "👏"]
 NEGATIVE = ["😡", "💀", "🤡", "👎", "😬", "🥶"]
 
-def random_positive():
-    return random.choice(POSITIVE)
-
-def random_negative():
-    return random.choice(NEGATIVE)
-
-# --- Rating logic ---
 RATING_PATTERN = re.compile(r"^([+-])(\d{1,3})$")
 
+@dp.message()
 async def rating_handler(message: types.Message):
     if not message.reply_to_message:
+        return
+    if not message.text:
         return
 
     match = RATING_PATTERN.match(message.text.strip())
@@ -88,21 +93,18 @@ async def rating_handler(message: types.Message):
     delta = amount if sign == "+" else -amount
     new_rating = change_rating(message.chat.id, target.id, delta)
 
-    emoji = random_positive() if delta > 0 else random_negative()
+    emoji = random.choice(POSITIVE if delta > 0 else NEGATIVE)
     delta_text = f"+{amount}" if delta > 0 else f"-{amount}"
 
-    voter_name = f"@{voter.username}" if voter.username else voter.full_name
-    target_name = f"@{target.username}" if target.username else target.full_name
-
     await message.answer(
-        f"👤 {voter_name} изменил рейтинг пользователю {target_name} {delta_text}\n"
+        f"👤 {voter.full_name} изменил рейтинг {target.full_name} {delta_text}\n"
         f"📊 Общий рейтинг в чате НОСА: {new_rating} {emoji}"
     )
 
-# --- Run ---
 async def main():
-    dp.message.register(rating_handler)
-    await dp.start_polling(bot)
+    logging.info("🤖 starting polling")
+    await dp.start_polling(bot, allowed_updates=["message"])
 
 if __name__ == "__main__":
     asyncio.run(main())
+
