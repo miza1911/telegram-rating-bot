@@ -3,7 +3,3 @@ primary_region = "ams"
 
 [processes]
 app = "python bot.py"
-
-[mounts]
-source = "data"
-destination = "/data"
