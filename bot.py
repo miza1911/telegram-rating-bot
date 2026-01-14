@@ -8,26 +8,26 @@ import logging
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
 
-# --- Logging ---
+# ------------------ LOGGING ------------------
 logging.basicConfig(level=logging.INFO)
 logging.info("🚀 bot.py started")
 
-# --- Token ---
+# ------------------ TOKEN ------------------
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 if not BOT_TOKEN:
     raise RuntimeError("BOT_TOKEN is not set")
 
-# --- Bot ---
+# ------------------ BOT ------------------
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
-# --- /start ---
+# ------------------ /start ------------------
 @dp.message(Command("start"))
 async def start(message: types.Message):
     await message.answer("✅ Бот жив. Рейтинг работает.")
 
-# --- Database ---
-conn = sqlite3.connect("ratings.db", check_same_thread=False)
+# ------------------ DATABASE ------------------
+conn = sqlite3.connect("ratings.db")
 cursor = conn.cursor()
 
 cursor.execute("""
@@ -63,12 +63,13 @@ def change_rating(chat_id: int, user_id: int, delta: int) -> int:
     conn.commit()
     return rating
 
-# --- Emojis ---
+# ------------------ EMOJIS ------------------
 POSITIVE = ["😎", "🔥", "💪", "🚀", "✨", "😁", "👏"]
 NEGATIVE = ["😡", "💀", "🤡", "👎", "😬", "🥶"]
 
-# --- Rating pattern: +10 / -5 ---
-RATING_PATTERN = re.compile(r"^([+-])(\d{1,3})$")
+# ------------------ RATING PARSER ------------------
+# ловит +10, + 10, ахаха +10, -5 лол и т.д.
+RATING_PATTERN = re.compile(r"([+-])\s*(\d{1,3})")
 
 @dp.message()
 async def rating_handler(message: types.Message):
@@ -77,7 +78,7 @@ async def rating_handler(message: types.Message):
     if not message.text:
         return
 
-    match = RATING_PATTERN.match(message.text.strip())
+    match = RATING_PATTERN.search(message.text)
     if not match:
         return
 
@@ -106,13 +107,13 @@ async def rating_handler(message: types.Message):
 
     await message.answer(
         f"👤 {voter_name} изменил рейтинг {target_name} {delta_text}\n"
-        f"📊 Рейтинг {target_name} в чате НОСА: {new_rating} {emoji}"
+        f"🏆 Общий рейтинг {target_name} в чате НОСА: {new_rating} {emoji}"
     )
 
-# --- Run ---
+# ------------------ RUN ------------------
 async def main():
     logging.info("🤖 starting polling")
-    await dp.start_polling(bot)
+    await dp.start_polling(bot, allowed_updates=["message"])
 
 if __name__ == "__main__":
     asyncio.run(main())
