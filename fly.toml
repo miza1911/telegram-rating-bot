@@ -1,4 +1,7 @@
 app = "telegram-rating-bot"
 
+kill_signal = "SIGINT"
+kill_timeout = 10
+
 [processes]
-  app = "python bot.py"
+app = "python bot.py"
