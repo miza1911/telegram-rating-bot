@@ -4,7 +4,6 @@ import random
 import sqlite3
 import asyncio
 import logging
-import time
 from datetime import datetime
 
 from aiogram import Bot, Dispatcher, types
@@ -24,7 +23,13 @@ bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
 # ------------------ DATABASE ------------------
-conn = sqlite3.connect("ratings.db")
+DB_FILE = "ratings.db"
+
+# При новом деплое обнуляем базу
+if os.path.exists(DB_FILE):
+    os.remove(DB_FILE)
+
+conn = sqlite3.connect(DB_FILE)
 cursor = conn.cursor()
 
 cursor.execute("""
@@ -78,9 +83,7 @@ SHAME_JOKES = [
     "Сегодня не твой день.",
     "Интернет всё помнит.",
     "Даже клавиатура плачет.",
-    "Это было больно.",
     "Минус за минусом.",
-    "Чат напрягся.",
     "Без комментариев.",
     "Лучше бы молчал.",
     "Остановись.",
@@ -114,7 +117,6 @@ def change_rating(chat_id: int, user_id: int, delta: int) -> int:
     conn.commit()
     return rating
 
-
 def today():
     return datetime.utcnow().strftime("%Y-%m-%d")
 
@@ -122,7 +124,6 @@ def today():
 @dp.message(Command("start"))
 async def start(message: types.Message):
     await message.answer("✅ Бот жив. Рейтинг считается.")
-
 
 @dp.message(Command("rating"))
 async def rating(message: types.Message):
@@ -146,7 +147,6 @@ async def rating(message: types.Message):
         text += f"{i}. {name} — {rating}\n"
 
     await message.answer(text)
-
 
 @dp.message(Command("top_plus"))
 async def top_plus(message: types.Message):
@@ -173,7 +173,6 @@ async def top_plus(message: types.Message):
         text += f"{i}. {name} — +{total}\n"
 
     await message.answer(text)
-
 
 @dp.message(Command("top_minus"))
 async def top_minus(message: types.Message):
@@ -204,9 +203,7 @@ async def top_minus(message: types.Message):
 # ------------------ RATING HANDLER ------------------
 @dp.message()
 async def rating_handler(message: types.Message):
-    if not message.reply_to_message:
-        return
-    if not message.text:
+    if not message.reply_to_message or not message.text:
         return
 
     match = RATING_PATTERN.search(message.text)
