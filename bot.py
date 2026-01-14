@@ -4,6 +4,7 @@ import random
 import sqlite3
 import asyncio
 import logging
+import time
 
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
@@ -26,8 +27,8 @@ dp = Dispatcher()
 async def start(message: types.Message):
     await message.answer("✅ Бот жив. Рейтинг работает.")
 
-# ------------------ DATABASE ------------------
-conn = sqlite3.connect("ratings.db")
+# ------------------ DATABASE (VOLUME) ------------------
+conn = sqlite3.connect("/data/ratings.db", check_same_thread=False)
 cursor = conn.cursor()
 
 cursor.execute("""
@@ -38,8 +39,19 @@ CREATE TABLE IF NOT EXISTS ratings (
     PRIMARY KEY (chat_id, user_id)
 )
 """)
+
+cursor.execute("""
+CREATE TABLE IF NOT EXISTS cooldowns (
+    chat_id INTEGER,
+    voter_id INTEGER,
+    last_time INTEGER,
+    PRIMARY KEY (chat_id, voter_id)
+)
+""")
+
 conn.commit()
 
+# ------------------ RATING LOGIC ------------------
 def change_rating(chat_id: int, user_id: int, delta: int) -> int:
     cursor.execute(
         "SELECT rating FROM ratings WHERE chat_id=? AND user_id=?",
@@ -67,13 +79,13 @@ def change_rating(chat_id: int, user_id: int, delta: int) -> int:
 POSITIVE = ["😎", "🔥", "💪", "🚀", "✨", "😁", "👏"]
 NEGATIVE = ["😡", "💀", "🤡", "👎", "😬", "🥶"]
 
-# ------------------ RATING PARSER ------------------
-# ловит: +10, + 10, ахаха +10, -5 лол и т.п.
+# ------------------ PARSER ------------------
 RATING_PATTERN = re.compile(r"([+-])\s*(\d{1,3})")
+COOLDOWN_SECONDS = 300  # 5 минут
 
 @dp.message()
 async def rating_handler(message: types.Message):
-    # ❗ БЕЗ REPLY — НИЧЕГО НЕ ДЕЛАЕМ
+    # ❗ ТОЛЬКО reply
     if not message.reply_to_message:
         return
 
@@ -94,12 +106,29 @@ async def rating_handler(message: types.Message):
     voter = message.from_user
     target = message.reply_to_message.from_user
 
-    if not target:
-        return
-
     if voter.id == target.id:
         await message.reply("Сам себе рейтинг крутить нельзя 😏")
         return
+
+    # ---------- COOLDOWN ----------
+    now = int(time.time())
+    cursor.execute(
+        "SELECT last_time FROM cooldowns WHERE chat_id=? AND voter_id=?",
+        (message.chat.id, voter.id)
+    )
+    row = cursor.fetchone()
+
+    if row and now - row[0] < COOLDOWN_SECONDS:
+        wait = COOLDOWN_SECONDS - (now - row[0])
+        await message.reply(f"⏳ Подожди {wait} сек перед следующим голосом")
+        return
+
+    cursor.execute(
+        "REPLACE INTO cooldowns VALUES (?, ?, ?)",
+        (message.chat.id, voter.id, now)
+    )
+    conn.commit()
+    # ------------------------------
 
     delta = amount if sign == "+" else -amount
     new_rating = change_rating(message.chat.id, target.id, delta)
@@ -107,13 +136,35 @@ async def rating_handler(message: types.Message):
     emoji = random.choice(POSITIVE if delta > 0 else NEGATIVE)
     delta_text = f"+{amount}" if delta > 0 else f"-{amount}"
 
-    voter_name = voter.first_name
-    target_name = target.first_name
-
-    await message.answer(
+   await message.answer(
         f"👤 {voter_name} изменил рейтинг {target_name} {delta_text}\n"
         f"🏆 Общий рейтинг {target_name} в чате НОСА: {new_rating} {emoji}"
     )
+
+# ------------------ /rating ------------------
+@dp.message(Command("rating"))
+async def show_rating(message: types.Message):
+    cursor.execute(
+        "SELECT user_id, rating FROM ratings WHERE chat_id=? ORDER BY rating DESC",
+        (message.chat.id,)
+    )
+    rows = cursor.fetchall()
+
+    if not rows:
+        await message.answer("📊 В чате пока нет рейтингов")
+        return
+
+    text = "🏆 Рейтинг чата:\n\n"
+    for i, (user_id, rating) in enumerate(rows, start=1):
+        try:
+            member = await bot.get_chat_member(message.chat.id, user_id)
+            name = member.user.first_name
+        except:
+            name = "Пользователь"
+
+        text += f"{i}. {name} — {rating}\n"
+
+    await message.answer(text)
 
 # ------------------ RUN ------------------
 async def main():
