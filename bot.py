@@ -24,7 +24,7 @@ async def start(message: types.Message):
     await message.answer("✅ Бот жив. Рейтинг работает.")
 
 # --- Database ---
-conn = sqlite3.connect("ratings.db")
+conn = sqlite3.connect("ratings.db", check_same_thread=False)
 cursor = conn.cursor()
 
 cursor.execute("""
@@ -65,6 +65,11 @@ NEGATIVE = ["😡", "💀", "🤡", "👎", "😬", "🥶"]
 
 RATING_PATTERN = re.compile(r"^([+-])(\d{1,3})$")
 
+def format_user(user: types.User) -> str:
+    if user.username:
+        return f"@{user.username}"
+    return user.full_name
+
 @dp.message()
 async def rating_handler(message: types.Message):
     if not message.reply_to_message:
@@ -96,17 +101,17 @@ async def rating_handler(message: types.Message):
     emoji = random.choice(POSITIVE if delta > 0 else NEGATIVE)
     delta_text = f"+{amount}" if delta > 0 else f"-{amount}"
 
-    await message.answer(
-    f"👤 {voter_name} → {target_name} {delta_text}\n"
-    f"🏆 Рейтинг {target_name} в чате НОСА: {new_rating} {emoji}"
-)
-)
+    voter_name = format_user(voter)
+    target_name = format_user(target)
 
+    await message.answer(
+        f"👤 {voter_name} → {target_name} {delta_text}\n"
+        f"🏆 Рейтинг {target_name} в чате НОСА: {new_rating} {emoji}"
+    )
 
 async def main():
     logging.info("🤖 starting polling")
-    await dp.start_polling(bot, allowed_updates=["message"])
+    await dp.start_polling(bot)
 
 if __name__ == "__main__":
     asyncio.run(main())
-
