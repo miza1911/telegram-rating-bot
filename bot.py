@@ -5,6 +5,7 @@ import sqlite3
 import asyncio
 import logging
 import time
+from datetime import datetime
 
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
@@ -22,13 +23,8 @@ if not BOT_TOKEN:
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
-# ------------------ /start ------------------
-@dp.message(Command("start"))
-async def start(message: types.Message):
-    await message.answer("✅ Бот жив. Рейтинг работает.")
-
-# ------------------ DATABASE (VOLUME) ------------------
-conn = sqlite3.connect("/data/ratings.db", check_same_thread=False)
+# ------------------ DATABASE ------------------
+conn = sqlite3.connect("ratings.db")
 cursor = conn.cursor()
 
 cursor.execute("""
@@ -41,17 +37,60 @@ CREATE TABLE IF NOT EXISTS ratings (
 """)
 
 cursor.execute("""
-CREATE TABLE IF NOT EXISTS cooldowns (
+CREATE TABLE IF NOT EXISTS actions (
     chat_id INTEGER,
     voter_id INTEGER,
-    last_time INTEGER,
-    PRIMARY KEY (chat_id, voter_id)
+    type TEXT,
+    amount INTEGER
+)
+""")
+
+cursor.execute("""
+CREATE TABLE IF NOT EXISTS daily_negative (
+    chat_id INTEGER,
+    user_id INTEGER,
+    date TEXT,
+    total INTEGER,
+    announced INTEGER DEFAULT 0,
+    PRIMARY KEY (chat_id, user_id, date)
 )
 """)
 
 conn.commit()
 
-# ------------------ RATING LOGIC ------------------
+# ------------------ CONSTANTS ------------------
+RATING_PATTERN = re.compile(r"([+-])\s*(\d{1,3})")
+NEGATIVE_LIMIT = 500
+
+POSITIVE_EMOJI = ["😎", "🔥", "💪", "🚀", "✨", "😁", "👏"]
+NEGATIVE_EMOJI = ["😡", "💀", "🤡", "👎", "😬", "🥶"]
+
+SHAME_EMOJI = ["🪦", "🚨", "💀", "🤡", "👎", "😬", "🧻"]
+
+SHAME_JOKES = [
+    "Чат в шоке.",
+    "Это уже диагноз.",
+    "Так даже враги не делают.",
+    "Рекорд, но со знаком минус.",
+    "История будет помнить.",
+    "Соболезнуем.",
+    "Никто не ожидал, но все знали.",
+    "Сегодня не твой день.",
+    "Интернет всё помнит.",
+    "Даже клавиатура плачет.",
+    "Это было больно.",
+    "Минус за минусом.",
+    "Чат напрягся.",
+    "Без комментариев.",
+    "Лучше бы молчал.",
+    "Остановись.",
+    "Это фиаско.",
+    "Поздравляем, ты смог.",
+    "Такое не отмывается.",
+    "Мама, я в телевизоре."
+]
+
+# ------------------ HELPERS ------------------
 def change_rating(chat_id: int, user_id: int, delta: int) -> int:
     cursor.execute(
         "SELECT rating FROM ratings WHERE chat_id=? AND user_id=?",
@@ -75,20 +114,98 @@ def change_rating(chat_id: int, user_id: int, delta: int) -> int:
     conn.commit()
     return rating
 
-# ------------------ EMOJIS ------------------
-POSITIVE = ["😎", "🔥", "💪", "🚀", "✨", "😁", "👏"]
-NEGATIVE = ["😡", "💀", "🤡", "👎", "😬", "🥶"]
 
-# ------------------ PARSER ------------------
-RATING_PATTERN = re.compile(r"([+-])\s*(\d{1,3})")
-COOLDOWN_SECONDS = 300  # 5 минут
+def today():
+    return datetime.utcnow().strftime("%Y-%m-%d")
 
-@dp.message()
-async def rating_handler(message: types.Message):
-    # ❗ ТОЛЬКО reply
-    if not message.reply_to_message:
+# ------------------ COMMANDS ------------------
+@dp.message(Command("start"))
+async def start(message: types.Message):
+    await message.answer("✅ Бот жив. Рейтинг считается.")
+
+
+@dp.message(Command("rating"))
+async def rating(message: types.Message):
+    cursor.execute(
+        "SELECT user_id, rating FROM ratings WHERE chat_id=? ORDER BY rating DESC",
+        (message.chat.id,)
+    )
+    rows = cursor.fetchall()
+
+    if not rows:
+        await message.answer("📊 В чате пока нет рейтинга")
         return
 
+    text = "🏆 **Рейтинг чата:**\n\n"
+    for i, (uid, rating) in enumerate(rows, 1):
+        try:
+            member = await bot.get_chat_member(message.chat.id, uid)
+            name = member.user.first_name
+        except:
+            name = "Пользователь"
+        text += f"{i}. {name} — {rating}\n"
+
+    await message.answer(text)
+
+
+@dp.message(Command("top_plus"))
+async def top_plus(message: types.Message):
+    cursor.execute("""
+        SELECT voter_id, SUM(amount) FROM actions
+        WHERE chat_id=? AND type='plus'
+        GROUP BY voter_id
+        ORDER BY SUM(amount) DESC
+        LIMIT 5
+    """, (message.chat.id,))
+    rows = cursor.fetchall()
+
+    if not rows:
+        await message.answer("😇 Пока никто не ставил плюсы")
+        return
+
+    text = "💖 **Самые добрые:**\n\n"
+    for i, (uid, total) in enumerate(rows, 1):
+        try:
+            member = await bot.get_chat_member(message.chat.id, uid)
+            name = member.user.first_name
+        except:
+            name = "Пользователь"
+        text += f"{i}. {name} — +{total}\n"
+
+    await message.answer(text)
+
+
+@dp.message(Command("top_minus"))
+async def top_minus(message: types.Message):
+    cursor.execute("""
+        SELECT voter_id, SUM(amount) FROM actions
+        WHERE chat_id=? AND type='minus'
+        GROUP BY voter_id
+        ORDER BY SUM(amount) DESC
+        LIMIT 5
+    """, (message.chat.id,))
+    rows = cursor.fetchall()
+
+    if not rows:
+        await message.answer("😇 Пока никто не ставил минусы")
+        return
+
+    text = "💀 **Главные хейтеры:**\n\n"
+    for i, (uid, total) in enumerate(rows, 1):
+        try:
+            member = await bot.get_chat_member(message.chat.id, uid)
+            name = member.user.first_name
+        except:
+            name = "Пользователь"
+        text += f"{i}. {name} — −{total}\n"
+
+    await message.answer(text)
+
+# ------------------ RATING HANDLER ------------------
+@dp.message()
+async def rating_handler(message: types.Message):
+    if not message.reply_to_message:
+        return
     if not message.text:
         return
 
@@ -100,71 +217,63 @@ async def rating_handler(message: types.Message):
     amount = int(amount_str)
 
     if not 1 <= amount <= 100:
-        await message.reply("Можно менять рейтинг только от 1 до 100 😎")
         return
 
     voter = message.from_user
     target = message.reply_to_message.from_user
 
-    if voter.id == target.id:
-        await message.reply("Сам себе рейтинг крутить нельзя 😏")
+    if not target or voter.id == target.id:
         return
-
-    # ---------- COOLDOWN ----------
-    now = int(time.time())
-    cursor.execute(
-        "SELECT last_time FROM cooldowns WHERE chat_id=? AND voter_id=?",
-        (message.chat.id, voter.id)
-    )
-    row = cursor.fetchone()
-
-    if row and now - row[0] < COOLDOWN_SECONDS:
-        wait = COOLDOWN_SECONDS - (now - row[0])
-        await message.reply(f"⏳ Подожди {wait} сек перед следующим голосом")
-        return
-
-    cursor.execute(
-        "REPLACE INTO cooldowns VALUES (?, ?, ?)",
-        (message.chat.id, voter.id, now)
-    )
-    conn.commit()
-    # ------------------------------
 
     delta = amount if sign == "+" else -amount
-    new_rating = change_rating(message.chat.id, target.id, delta)
+    change_rating(message.chat.id, target.id, delta)
 
-    emoji = random.choice(POSITIVE if delta > 0 else NEGATIVE)
-    delta_text = f"+{amount}" if delta > 0 else f"-{amount}"
-
-   await message.answer(
-        f"👤 {voter_name} изменил рейтинг {target_name} {delta_text}\n"
-        f"🏆 Общий рейтинг {target_name} в чате НОСА: {new_rating} {emoji}"
-    )
-
-# ------------------ /rating ------------------
-@dp.message(Command("rating"))
-async def show_rating(message: types.Message):
     cursor.execute(
-        "SELECT user_id, rating FROM ratings WHERE chat_id=? ORDER BY rating DESC",
-        (message.chat.id,)
+        "INSERT INTO actions VALUES (?, ?, ?, ?)",
+        (message.chat.id, voter.id, "plus" if delta > 0 else "minus", amount)
     )
-    rows = cursor.fetchall()
 
-    if not rows:
-        await message.answer("📊 В чате пока нет рейтингов")
-        return
+    # ---- DAILY SHAME ----
+    if delta < 0:
+        d = today()
+        cursor.execute("""
+            SELECT total, announced FROM daily_negative
+            WHERE chat_id=? AND user_id=? AND date=?
+        """, (message.chat.id, target.id, d))
+        row = cursor.fetchone()
 
-    text = "🏆 Рейтинг чата:\n\n"
-    for i, (user_id, rating) in enumerate(rows, start=1):
-        try:
-            member = await bot.get_chat_member(message.chat.id, user_id)
-            name = member.user.first_name
-        except:
-            name = "Пользователь"
+        total = amount
+        announced = 0
 
-        text += f"{i}. {name} — {rating}\n"
+        if row:
+            total += row[0]
+            announced = row[1]
 
-    await message.answer(text)
+            cursor.execute("""
+                UPDATE daily_negative SET total=?
+                WHERE chat_id=? AND user_id=? AND date=?
+            """, (total, message.chat.id, target.id, d))
+        else:
+            cursor.execute("""
+                INSERT INTO daily_negative VALUES (?, ?, ?, ?, 0)
+            """, (message.chat.id, target.id, d, total))
+
+        if total >= NEGATIVE_LIMIT and not announced:
+            joke = random.choice(SHAME_JOKES)
+            emoji = random.choice(SHAME_EMOJI)
+
+            await message.answer(
+                f"{emoji} **ПОЗОР ДНЯ** {emoji}\n"
+                f"{target.first_name} получил −{total} за сутки.\n"
+                f"{joke}"
+            )
+
+            cursor.execute("""
+                UPDATE daily_negative SET announced=1
+                WHERE chat_id=? AND user_id=? AND date=?
+            """, (message.chat.id, target.id, d))
+
+    conn.commit()
 
 # ------------------ RUN ------------------
 async def main():
@@ -173,5 +282,3 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
-
-
