@@ -106,7 +106,7 @@ async def rating_handler(message: types.Message):
 
     await message.answer(
         f"👤 {voter_name} изменил рейтинг {target_name} {delta_text}\n"
-        f"📊 Общий рейтинг {target_name} в чате НОСА: {new_rating} {emoji}"
+        f"📊 Рейтинг {target_name} в чате НОСА: {new_rating} {emoji}"
     )
 
 # --- Run ---
