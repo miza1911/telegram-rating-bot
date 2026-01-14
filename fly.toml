@@ -2,4 +2,8 @@ app = "telegram-rating-bot"
 primary_region = "ams"
 
 [processes]
-  app = "python bot.py"
+app = "python bot.py"
+
+[mounts]
+source = "data"
+destination = "/data"
