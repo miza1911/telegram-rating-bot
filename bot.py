@@ -8,13 +8,16 @@ import logging
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
 
+# --- Logging ---
 logging.basicConfig(level=logging.INFO)
 logging.info("🚀 bot.py started")
 
+# --- Token ---
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 if not BOT_TOKEN:
     raise RuntimeError("BOT_TOKEN is not set")
 
+# --- Bot ---
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
@@ -60,15 +63,12 @@ def change_rating(chat_id: int, user_id: int, delta: int) -> int:
     conn.commit()
     return rating
 
+# --- Emojis ---
 POSITIVE = ["😎", "🔥", "💪", "🚀", "✨", "😁", "👏"]
 NEGATIVE = ["😡", "💀", "🤡", "👎", "😬", "🥶"]
 
+# --- Rating pattern: +10 / -5 ---
 RATING_PATTERN = re.compile(r"^([+-])(\d{1,3})$")
-
-def format_user(user: types.User) -> str:
-    if user.username:
-        return f"@{user.username}"
-    return user.full_name
 
 @dp.message()
 async def rating_handler(message: types.Message):
@@ -101,14 +101,15 @@ async def rating_handler(message: types.Message):
     emoji = random.choice(POSITIVE if delta > 0 else NEGATIVE)
     delta_text = f"+{amount}" if delta > 0 else f"-{amount}"
 
-    voter_name = format_user(voter)
-    target_name = format_user(target)
+    voter_name = voter.first_name
+    target_name = target.first_name
 
     await message.answer(
-        f"👤 {voter_name} → {target_name} {delta_text}\n"
-        f"🏆 Рейтинг {target_name} в чате НОСА: {new_rating} {emoji}"
+        f"👤 {voter_name} изменил рейтинг {target_name} {delta_text}\n"
+        f"📊 Общий рейтинг {target_name} в чате НОСА: {new_rating} {emoji}"
     )
 
+# --- Run ---
 async def main():
     logging.info("🤖 starting polling")
     await dp.start_polling(bot)
