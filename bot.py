@@ -21,6 +21,11 @@ if not BOT_TOKEN:
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
+# ------------------ /start ------------------
+@dp.message(Command("start"))
+async def start(message: types.Message):
+    await message.answer("✅ Бот жив. Рейтинг работает.")
+
 # ------------------ DATABASE ------------------
 conn = sqlite3.connect("ratings.db")
 cursor = conn.cursor()
@@ -45,7 +50,7 @@ def change_rating(chat_id: int, user_id: int, delta: int) -> int:
     if row is None:
         rating = delta
         cursor.execute(
-            "INSERT INTO ratings (chat_id, user_id, rating) VALUES (?, ?, ?)",
+            "INSERT INTO ratings VALUES (?, ?, ?)",
             (chat_id, user_id, rating)
         )
     else:
@@ -58,31 +63,24 @@ def change_rating(chat_id: int, user_id: int, delta: int) -> int:
     conn.commit()
     return rating
 
-# ------------------ COMMANDS ------------------
-@dp.message(Command("start"))
-async def start(message: types.Message):
-    await message.answer("✅ Бот жив. Рейтинг работает.")
-
 # ------------------ EMOJIS ------------------
 POSITIVE = ["😎", "🔥", "💪", "🚀", "✨", "😁", "👏"]
 NEGATIVE = ["😡", "💀", "🤡", "👎", "😬", "🥶"]
 
-# ------------------ RATING REGEX ------------------
-# ловит +10, + 10, текст +5 текст, ахаха -3 и т.д.
-RATING_REGEX = re.compile(r'([+-])\s*(\d{1,3})')
+# ------------------ RATING PARSER ------------------
+# ловит: +10, + 10, ахаха +10, -5 лол и т.п.
+RATING_PATTERN = re.compile(r"([+-])\s*(\d{1,3})")
 
-# ------------------ RATING HANDLER (ВСЕГДА ПОСЛЕДНИЙ) ------------------
 @dp.message()
 async def rating_handler(message: types.Message):
-    # ❗ Только текст
-    if not message.text:
-        return
-
-    # ❗ ОБЯЗАТЕЛЬНО reply, иначе игнор
+    # ❗ БЕЗ REPLY — НИЧЕГО НЕ ДЕЛАЕМ
     if not message.reply_to_message:
         return
 
-    match = RATING_REGEX.search(message.text)
+    if not message.text:
+        return
+
+    match = RATING_PATTERN.search(message.text)
     if not match:
         return
 
@@ -111,18 +109,18 @@ async def rating_handler(message: types.Message):
 
     voter_name = voter.first_name
     target_name = target.first_name
-    chat_name = message.chat.title or "этот чат"
 
-  await message.answer(
+    await message.answer(
         f"👤 {voter_name} изменил рейтинг {target_name} {delta_text}\n"
-        f"🏆 Общий рейтинг {target_name} в чате {chat_name}: {new_rating} {emoji}"
+        f"🏆 Общий рейтинг {target_name} в чате НОСА: {new_rating} {emoji}"
     )
 
 # ------------------ RUN ------------------
 async def main():
     logging.info("🤖 starting polling")
-    await dp.start_polling(bot)
+    await dp.start_polling(bot, allowed_updates=["message"])
 
 if __name__ == "__main__":
     asyncio.run(main())
+
 
