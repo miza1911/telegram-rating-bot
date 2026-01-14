@@ -8,19 +8,20 @@ import logging
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
 
-# -------------------- LOGGING --------------------
+# ------------------ LOGGING ------------------
 logging.basicConfig(level=logging.INFO)
 logging.info("🚀 bot.py started")
 
-# -------------------- BOT --------------------
+# ------------------ TOKEN ------------------
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 if not BOT_TOKEN:
     raise RuntimeError("BOT_TOKEN is not set")
 
+# ------------------ BOT ------------------
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
-# -------------------- DATABASE --------------------
+# ------------------ DATABASE ------------------
 conn = sqlite3.connect("ratings.db")
 cursor = conn.cursor()
 
@@ -57,24 +58,27 @@ def change_rating(chat_id: int, user_id: int, delta: int) -> int:
     conn.commit()
     return rating
 
-# -------------------- COMMANDS --------------------
+# ------------------ COMMANDS ------------------
 @dp.message(Command("start"))
 async def start(message: types.Message):
     await message.answer("✅ Бот жив. Рейтинг работает.")
 
-# -------------------- RATING --------------------
+# ------------------ EMOJIS ------------------
 POSITIVE = ["😎", "🔥", "💪", "🚀", "✨", "😁", "👏"]
 NEGATIVE = ["😡", "💀", "🤡", "👎", "😬", "🥶"]
 
-# Ищем +10 или -5 В ЛЮБОЙ ЧАСТИ ТЕКСТА
+# ------------------ RATING REGEX ------------------
+# ловит +10, + 10, текст +5 текст, ахаха -3 и т.д.
 RATING_REGEX = re.compile(r'([+-])\s*(\d{1,3})')
 
+# ------------------ RATING HANDLER (ВСЕГДА ПОСЛЕДНИЙ) ------------------
 @dp.message()
 async def rating_handler(message: types.Message):
+    # ❗ Только текст
     if not message.text:
         return
 
-    # ❗ ОБЯЗАТЕЛЬНО reply
+    # ❗ ОБЯЗАТЕЛЬНО reply, иначе игнор
     if not message.reply_to_message:
         return
 
@@ -92,6 +96,9 @@ async def rating_handler(message: types.Message):
     voter = message.from_user
     target = message.reply_to_message.from_user
 
+    if not target:
+        return
+
     if voter.id == target.id:
         await message.reply("Сам себе рейтинг крутить нельзя 😏")
         return
@@ -106,12 +113,12 @@ async def rating_handler(message: types.Message):
     target_name = target.first_name
     chat_name = message.chat.title or "этот чат"
 
-     await message.answer(
+  await message.answer(
         f"👤 {voter_name} изменил рейтинг {target_name} {delta_text}\n"
-        f"🏆 Общий рейтинг {target_name} в чате НОСА: {new_rating} {emoji}"
+        f"🏆 Общий рейтинг {target_name} в чате {chat_name}: {new_rating} {emoji}"
     )
 
-# -------------------- START --------------------
+# ------------------ RUN ------------------
 async def main():
     logging.info("🤖 starting polling")
     await dp.start_polling(bot)
