@@ -1,2 +1,8 @@
 app = "telegram-rating-bot"
 primary_region = "ams"
+
+[build]
+  image = "registry.fly.io/telegram-rating-bot:deployment-be87bbd784715d45efd30526ae9a2d48"
+
+[processes]
+  app = "python bot.py"
