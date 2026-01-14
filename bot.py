@@ -97,9 +97,11 @@ async def rating_handler(message: types.Message):
     delta_text = f"+{amount}" if delta > 0 else f"-{amount}"
 
     await message.answer(
-        f"👤 {voter.full_name} изменил рейтинг {target.full_name} {delta_text}\n"
-        f"📊 Общий рейтинг в чате НОСА: {new_rating} {emoji}"
-    )
+    f"👤 {voter_name} → {target_name} {delta_text}\n"
+    f"🏆 Рейтинг {target_name} в чате НОСА: {new_rating} {emoji}"
+)
+)
+
 
 async def main():
     logging.info("🤖 starting polling")
