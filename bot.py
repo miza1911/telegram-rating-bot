@@ -7,7 +7,7 @@ import logging
 from datetime import datetime, timedelta
 
 from aiogram import Bot, Dispatcher, types
-from aiogram.filters import Command
+from aiogram.filters import Command, CommandStart
 
 logging.basicConfig(level=logging.INFO)
 
@@ -133,6 +133,18 @@ def given_to(chat_id, f, t):
     )
     return cursor.fetchone()[0] or 0
 
+def progress_bar(current, total, length=10):
+    filled = int(current / max(total, 1) * length)
+    empty = length - filled
+    return "🟩"*filled + "⬜"*empty
+
+async def get_user_name(chat_id, user_id):
+    try:
+        member = await bot.get_chat_member(chat_id, user_id)
+        return member.user.first_name
+    except:
+        return f"User {user_id}"
+
 # ---------- HANDLERS ----------
 @dp.message()
 async def rating(m: types.Message):
@@ -163,10 +175,8 @@ async def rating(m: types.Message):
         delta = amount
 
     else:
-        # минус
         used_free = min(minus_free, amount)
         remaining = amount - used_free
-
         minus_free -= used_free
 
         if remaining > 0:
@@ -174,7 +184,7 @@ async def rating(m: types.Message):
             if given < remaining:
                 await m.reply("🐍 Сначала дай, потом забирай.")
                 return
-            plus_left += remaining  # ВОЗВРАТ
+            plus_left += remaining
         delta = -amount
 
     update_daily(m.chat.id, voter.id, plus_left, minus_free)
@@ -196,52 +206,119 @@ async def rating(m: types.Message):
         )
 
 # ---------- COMMANDS ----------
-@dp.message(Command("me"))
-async def me(m: types.Message):
-    plus, minus = get_daily(m.chat.id, m.from_user.id)
+@dp.message(CommandStart())
+async def start(m: types.Message):
     await m.answer(
-        f"👤 {get_name(m.from_user)}\n"
-        f"➕ Плюсы: {plus}\n"
-        f"➖ Минусы: {minus}/50"
+        f"Привет, {get_name(m.from_user)}! Я бот для рейтинга.\n"
+        "Используй +N или -N в ответ на сообщение, чтобы менять рейтинг.\n"
+        "Команды:\n"
+        "/me — твоя статистика\n"
+        "/rich — самые щедрые\n"
+        "/hate — хейтеры\n"
+        "/top — топ чата"
     )
 
-@dp.message(Command("rich"))
+@dp.message(Command(commands=["me"]))
+async def me(m: types.Message):
+    chat_id = m.chat.id
+    user_id = m.from_user.id
+
+    cursor.execute("SELECT rating FROM rating WHERE chat_id=? AND user_id=?", (chat_id, user_id))
+    row = cursor.fetchone()
+    rating = row[0] if row else 0
+
+    plus_left, minus_left = get_daily(chat_id, user_id)
+
+    cursor.execute(
+        "SELECT SUM(amount) FROM daily_actions WHERE chat_id=? AND from_id=? AND amount>0",
+        (chat_id, user_id)
+    )
+    given_total = cursor.fetchone()[0] or 0
+
+    cursor.execute(
+        "SELECT SUM(amount) FROM daily_actions WHERE chat_id=? AND from_id=? AND amount<0",
+        (chat_id, user_id)
+    )
+    taken_total = abs(cursor.fetchone()[0] or 0)
+
+    text = (
+        f"📊 <b>Твоя статистика</b>\n\n"
+        f"⭐ <b>Рейтинг:</b> {rating}\n"
+        f"➕ <b>Осталось плюсов:</b> {plus_left} {progress_bar(plus_left, DAILY_PLUS)}\n"
+        f"➖ <b>Минус-баланс:</b> {minus_left} {progress_bar(minus_left, DAILY_MINUS_FREE)}\n"
+        f"💰 <b>Отдал всего:</b> {given_total}\n"
+        f"😈 <b>Забрал всего:</b> {taken_total}"
+    )
+
+    await m.answer(text, parse_mode="HTML")
+
+@dp.message(Command(commands=["rich"]))
 async def rich(m: types.Message):
+    chat_id = m.chat.id
     cursor.execute(
-        "SELECT from_id, SUM(amount) FROM daily_actions "
-        "WHERE chat_id=? AND amount>0 GROUP BY from_id ORDER BY SUM(amount) DESC LIMIT 5",
-        (m.chat.id,)
+        "SELECT from_id, SUM(amount) FROM daily_actions WHERE chat_id=? AND amount>0 GROUP BY from_id ORDER BY SUM(amount) DESC LIMIT 5",
+        (chat_id,)
     )
     rows = cursor.fetchall()
-    text = "💎 Самые щедрые:\n"
-    for i, r in enumerate(rows, 1):
-        text += f"{i}. {r[1]}\n"
-    await m.answer(text)
+    if not rows:
+        await m.answer("Пока нет щедрых участников 😔")
+        return
 
-@dp.message(Command("hate"))
+    max_total = max(r[1] for r in rows)
+    text = "💎 <b>Самые щедрые</b>:\n\n"
+
+    for i, (user_id, total) in enumerate(rows, 1):
+        name = await get_user_name(chat_id, user_id)
+        bar = progress_bar(total, max_total)
+        text += f"{i}. {name} — {total} {bar}\n"
+
+    await m.answer(text, parse_mode="HTML")
+
+@dp.message(Command(commands=["hate"]))
 async def hate(m: types.Message):
+    chat_id = m.chat.id
     cursor.execute(
-        "SELECT from_id, SUM(amount) FROM daily_actions "
-        "WHERE chat_id=? AND amount<0 GROUP BY from_id ORDER BY SUM(amount) ASC LIMIT 5",
-        (m.chat.id,)
+        "SELECT from_id, SUM(amount) FROM daily_actions WHERE chat_id=? AND amount<0 GROUP BY from_id ORDER BY SUM(amount) ASC LIMIT 5",
+        (chat_id,)
     )
     rows = cursor.fetchall()
-    text = "😈 Хейтеры:\n"
-    for i, r in enumerate(rows, 1):
-        text += f"{i}. {abs(r[1])}\n"
-    await m.answer(text)
+    if not rows:
+        await m.answer("Пока нет хейтеров 😇")
+        return
 
-@dp.message(Command("top"))
+    max_total = abs(min(r[1] for r in rows))
+    text = "😈 <b>Хейтеры</b>:\n\n"
+
+    for i, (user_id, total) in enumerate(rows, 1):
+        name = await get_user_name(chat_id, user_id)
+        bar = progress_bar(abs(total), max_total)
+        text += f"{i}. {name} — {abs(total)} {bar}\n"
+
+    await m.answer(text, parse_mode="HTML")
+
+@dp.message(Command(commands=["top"]))
 async def top(m: types.Message):
+    chat_id = m.chat.id
     cursor.execute(
         "SELECT user_id, rating FROM rating WHERE chat_id=? ORDER BY rating DESC LIMIT 10",
-        (m.chat.id,)
+        (chat_id,)
     )
     rows = cursor.fetchall()
-    text = "🏆 Рейтинг:\n"
-    for i, r in enumerate(rows, 1):
-        text += f"{i}. {r[1]}\n"
-    await m.answer(text)
+    if not rows:
+        await m.answer("Рейтинг пока пуст 😔")
+        return
+
+    max_rating = max(r[1] for r in rows) or 1
+    text = "🏆 <b>Топ участников</b>:\n\n"
+    medals = ["🥇", "🥈", "🥉"]
+
+    for i, (user_id, rating) in enumerate(rows, 1):
+        name = await get_user_name(chat_id, user_id)
+        bar = progress_bar(rating, max_rating)
+        medal = medals[i-1] if i <= 3 else f"{i}."
+        text += f"{medal} {name} — {rating} {bar}\n"
+
+    await m.answer(text, parse_mode="HTML")
 
 # ---------- RUN ----------
 async def main():
@@ -249,4 +326,3 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
-
