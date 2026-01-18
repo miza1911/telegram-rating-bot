@@ -118,7 +118,7 @@ def given_to(chat_id, f, t):
     return cursor.fetchone()[0] or 0
 
 def progress_bar(current, total, length=10):
-    filled = int(current / total * length)
+    filled = int(current / total * length) if total else 0
     empty = length - filled
     return "🟩"*filled + "⬜"*empty
 
@@ -163,7 +163,7 @@ async def rating(m: types.Message):
             if given < remaining:
                 await m.reply("🐍 Сначала дай, потом забирай.")
                 return
-            plus_left += remaining  # возврат
+            plus_left += remaining
         delta = -amount
 
     update_daily(m.chat.id, voter.id, plus_left, minus_free)
@@ -191,7 +191,8 @@ async def me(m: types.Message):
         "SELECT rating FROM rating WHERE chat_id=? AND user_id=?",
         (m.chat.id, m.from_user.id)
     )
-    rating = cursor.fetchone()[0] if cursor.fetchone() else 0
+    rating = cursor.fetchone()
+    rating = rating[0] if rating else 0
 
     cursor.execute(
         "SELECT SUM(amount) FROM daily_actions WHERE chat_id=? AND from_id=? AND amount>0",
@@ -226,7 +227,7 @@ async def top(m: types.Message):
         await m.answer("Рейтинг пока пуст 😔")
         return
 
-    max_rating = max(r[1] for r in rows) or 1
+    max_rating = max([r[1] for r in rows], default=1)
     text = "🏆 <b>Топ участников</b>:\n\n"
     medals = ["🥇", "🥈", "🥉"]
 
@@ -236,7 +237,6 @@ async def top(m: types.Message):
             name = user.user.first_name
         except:
             name = f"User {user_id}"
-
         bar = progress_bar(rating, max_rating)
         medal = medals[i-1] if i <= 3 else f"{i}."
         text += f"{medal} {name} — {rating} {bar}\n"
@@ -251,8 +251,11 @@ async def rich(m: types.Message):
         (m.chat.id,)
     )
     rows = cursor.fetchall()
-    text = "💎 <b>Самые щедрые за сутки</b>:\n"
+    if not rows:
+        await m.answer("Пока никто не раздавал плюсы 😔")
+        return
     max_val = max([r[1] for r in rows], default=1)
+    text = "💎 <b>Самые щедрые за сутки</b>:\n"
     for i, r in enumerate(rows, 1):
         try:
             user = await bot.get_chat_member(m.chat.id, r[0])
@@ -271,8 +274,11 @@ async def hate(m: types.Message):
         (m.chat.id,)
     )
     rows = cursor.fetchall()
-    text = "😈 <b>Хейтеры за сутки</b>:\n"
+    if not rows:
+        await m.answer("Пока никто не раздавал минусы 😔")
+        return
     max_val = max([abs(r[1]) for r in rows], default=1)
+    text = "😈 <b>Хейтеры за сутки</b>:\n"
     for i, r in enumerate(rows, 1):
         try:
             user = await bot.get_chat_member(m.chat.id, r[0])
