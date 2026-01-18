@@ -148,18 +148,55 @@ async def start(m: types.Message):
 
 @dp.message(Command("me"))
 async def me(m: types.Message):
-    plus, minus, _ = get_balance(m.chat.id, m.from_user.id)
+    chat_id = m.chat.id
+    user_id = m.from_user.id
+
+    plus, minus, _ = get_balance(chat_id, user_id)
+
+    cursor.execute(
+        "SELECT rating FROM ratings WHERE chat_id=? AND user_id=?",
+        (chat_id, user_id)
+    )
+    row = cursor.fetchone()
+    rating = row[0] if row else 0
+
+    cursor.execute(
+        "SELECT SUM(amount) FROM actions WHERE chat_id=? AND from_id=? AND amount>0",
+        (chat_id, user_id)
+    )
+    given_total = cursor.fetchone()[0] or 0
+
+    cursor.execute(
+        "SELECT SUM(amount) FROM actions WHERE chat_id=? AND from_id=? AND amount<0",
+        (chat_id, user_id)
+    )
+    taken_total = abs(cursor.fetchone()[0] or 0)
+
+    if rating >= 300:
+        title = "💎 Легенда чата"
+    elif rating >= 100:
+        title = "🔥 Уважаемый"
+    elif rating <= -100:
+        title = "💀 Опасный"
+    else:
+        title = "🙂 Нейтрал"
+
     await m.answer(
-        f"👤 {m.from_user.first_name}\n"
-        f"➕ Плюсы: {plus}\n"
-        f"➖ Минусы: {minus}/50"
+        f"📊 <b>Твоя статистика</b>\n\n"
+        f"👤 <b>{m.from_user.first_name}</b>\n"
+        f"🏷 <b>Статус:</b> {title}\n\n"
+        f"⭐ <b>Рейтинг:</b> {rating}\n"
+        f"➕ <b>Осталось плюсов:</b> {plus}\n"
+        f"➖ <b>Минус-баланс:</b> {minus}/50\n\n"
+        f"💰 <b>Отдал всего:</b> +{given_total}\n"
+        f"😈 <b>Забрал всего:</b> −{taken_total}",
+        parse_mode="HTML"
     )
 
 @dp.message(Command("top"))
 async def top(m: types.Message):
     cursor.execute(
-        "SELECT user_id, rating FROM ratings "
-        "WHERE chat_id=? ORDER BY rating DESC",
+        "SELECT user_id, rating FROM ratings WHERE chat_id=? ORDER BY rating DESC",
         (m.chat.id,)
     )
     rows = cursor.fetchall()
@@ -252,8 +289,7 @@ async def rating_handler(m: types.Message):
         rollback = min(given, amount)
 
         if rollback > 0:
-            plus += rollback
-            log_action(m.chat.id, voter.id, target.id, -rollback)
+            plus += rollback  # rollback НЕ логируем
 
         real_minus = amount - rollback
 
@@ -264,6 +300,7 @@ async def rating_handler(m: types.Message):
                 await m.reply("🐍 Сначала дай, потом забирай")
                 return
             change_rating(m.chat.id, target.id, -real_minus)
+            log_action(m.chat.id, voter.id, target.id, -real_minus)
 
     if plus < 50 and not warned:
         await m.reply(random.choice(LOW_PLUS_WARNINGS))
@@ -288,9 +325,7 @@ async def rating_handler(m: types.Message):
 
 # ------------------ RUN ------------------
 async def main():
-    # 🔥 КРИТИЧЕСКИЙ ФИКС: убираем webhook
     await bot.delete_webhook(drop_pending_updates=True)
-
     logging.info("🤖 polling started")
     await dp.start_polling(bot)
 
