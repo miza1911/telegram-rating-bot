@@ -7,7 +7,7 @@ import logging
 from datetime import datetime, timedelta
 
 from aiogram import Bot, Dispatcher, types
-from aiogram.filters import Command, CommandStart
+from aiogram.filters import CommandStart, Text
 
 logging.basicConfig(level=logging.INFO)
 
@@ -127,6 +127,7 @@ def progress_bar(current, total, length=10):
 async def start(m: types.Message):
     await m.answer("🐾 Рейтинговый бот активен. Используй /me, /top, /rich, /hate")
 
+# Ловим рейтинги через ответ на сообщение
 @dp.message()
 async def rating(m: types.Message):
     if not m.reply_to_message or not m.text:
@@ -157,7 +158,6 @@ async def rating(m: types.Message):
         used_free = min(minus_free, amount)
         remaining = amount - used_free
         minus_free -= used_free
-
         if remaining > 0:
             given = given_to(m.chat.id, voter.id, target.id)
             if given < remaining:
@@ -182,28 +182,16 @@ async def rating(m: types.Message):
     if total <= SHAME_LIMIT:
         await m.answer(f"🚨 ПОЗОР ДНЯ 🚨\n{get_name(target)} за сутки набрал {total}.")
 
-# ---------- COMMANDS ----------
-@dp.message(Command(commands=["me"]))
+# ---------- КОМАНДЫ через Text фильтр (работают в группах) ----------
+@dp.message(Text(startswith="/me"))
 async def me(m: types.Message):
     plus, minus = get_daily(m.chat.id, m.from_user.id)
-
-    cursor.execute(
-        "SELECT rating FROM rating WHERE chat_id=? AND user_id=?",
-        (m.chat.id, m.from_user.id)
-    )
+    cursor.execute("SELECT rating FROM rating WHERE chat_id=? AND user_id=?", (m.chat.id, m.from_user.id))
     rating = cursor.fetchone()
     rating = rating[0] if rating else 0
-
-    cursor.execute(
-        "SELECT SUM(amount) FROM daily_actions WHERE chat_id=? AND from_id=? AND amount>0",
-        (m.chat.id, m.from_user.id)
-    )
+    cursor.execute("SELECT SUM(amount) FROM daily_actions WHERE chat_id=? AND from_id=? AND amount>0", (m.chat.id, m.from_user.id))
     given_total = cursor.fetchone()[0] or 0
-
-    cursor.execute(
-        "SELECT SUM(amount) FROM daily_actions WHERE chat_id=? AND from_id=? AND amount<0",
-        (m.chat.id, m.from_user.id)
-    )
+    cursor.execute("SELECT SUM(amount) FROM daily_actions WHERE chat_id=? AND from_id=? AND amount<0", (m.chat.id, m.from_user.id))
     taken_total = abs(cursor.fetchone()[0] or 0)
 
     text = (
@@ -216,21 +204,16 @@ async def me(m: types.Message):
     )
     await m.answer(text, parse_mode="HTML")
 
-@dp.message(Command(commands=["top"]))
+@dp.message(Text(startswith="/top"))
 async def top(m: types.Message):
-    cursor.execute(
-        "SELECT user_id, rating FROM rating WHERE chat_id=? ORDER BY rating DESC LIMIT 10",
-        (m.chat.id,)
-    )
+    cursor.execute("SELECT user_id, rating FROM rating WHERE chat_id=? ORDER BY rating DESC LIMIT 10", (m.chat.id,))
     rows = cursor.fetchall()
     if not rows:
         await m.answer("Рейтинг пока пуст 😔")
         return
-
     max_rating = max([r[1] for r in rows], default=1)
     text = "🏆 <b>Топ участников</b>:\n\n"
     medals = ["🥇", "🥈", "🥉"]
-
     for i, (user_id, rating) in enumerate(rows, 1):
         try:
             user = await bot.get_chat_member(m.chat.id, user_id)
@@ -240,10 +223,9 @@ async def top(m: types.Message):
         bar = progress_bar(rating, max_rating)
         medal = medals[i-1] if i <= 3 else f"{i}."
         text += f"{medal} {name} — {rating} {bar}\n"
-
     await m.answer(text, parse_mode="HTML")
 
-@dp.message(Command(commands=["rich"]))
+@dp.message(Text(startswith="/rich"))
 async def rich(m: types.Message):
     cursor.execute(
         "SELECT from_id, SUM(amount) FROM daily_actions "
@@ -266,7 +248,7 @@ async def rich(m: types.Message):
         text += f"{i}. {name} — {r[1]} {bar}\n"
     await m.answer(text, parse_mode="HTML")
 
-@dp.message(Command(commands=["hate"]))
+@dp.message(Text(startswith="/hate"))
 async def hate(m: types.Message):
     cursor.execute(
         "SELECT from_id, SUM(amount) FROM daily_actions "
@@ -296,5 +278,3 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
-
-
