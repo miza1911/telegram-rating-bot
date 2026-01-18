@@ -163,6 +163,7 @@ async def top(m: types.Message):
         (m.chat.id,)
     )
     rows = cursor.fetchall()
+
     if not rows:
         await m.answer("📊 Пока пусто")
         return
@@ -188,7 +189,7 @@ async def rich(m: types.Message):
     )
     rows = cursor.fetchall()
     text = "💸 Щедрые:\n\n"
-    for i, (uid, s) in enumerate(rows, 1):
+    for i, (_, s) in enumerate(rows, 1):
         text += f"{i}. +{s}\n"
     await m.answer(text)
 
@@ -202,7 +203,7 @@ async def hate(m: types.Message):
     )
     rows = cursor.fetchall()
     text = "😈 Хейтеры:\n\n"
-    for i, (uid, s) in enumerate(rows, 1):
+    for i, (_, s) in enumerate(rows, 1):
         text += f"{i}. {abs(s)}\n"
     await m.answer(text)
 
@@ -237,7 +238,6 @@ async def rating_handler(m: types.Message):
 
     plus, minus, warned = get_balance(m.chat.id, voter.id)
 
-    # -------- PLUS --------
     if sign == "+":
         if plus < amount:
             await m.reply("💸 Плюсов не хватает")
@@ -247,5 +247,52 @@ async def rating_handler(m: types.Message):
         change_rating(m.chat.id, target.id, amount)
         log_action(m.chat.id, voter.id, target.id, amount)
 
-    # -------- MINUS -
+    else:
+        given = total_given(m.chat.id, voter.id, target.id)
+        rollback = min(given, amount)
 
+        if rollback > 0:
+            plus += rollback
+            log_action(m.chat.id, voter.id, target.id, -rollback)
+
+        real_minus = amount - rollback
+
+        if real_minus > 0:
+            if minus >= real_minus:
+                minus -= real_minus
+            else:
+                await m.reply("🐍 Сначала дай, потом забирай")
+                return
+            change_rating(m.chat.id, target.id, -real_minus)
+
+    if plus < 50 and not warned:
+        await m.reply(random.choice(LOW_PLUS_WARNINGS))
+        warned = 1
+
+    update_balance(m.chat.id, voter.id, plus, minus, warned)
+
+    cursor.execute(
+        "SELECT SUM(amount) FROM actions "
+        "WHERE chat_id=? AND to_id=? AND ts > ?",
+        (m.chat.id, target.id,
+         int((datetime.utcnow() - timedelta(days=1)).timestamp()))
+    )
+    day_sum = cursor.fetchone()[0] or 0
+
+    if day_sum <= SHAME_LIMIT:
+        await m.answer(
+            f"🚨 ПОЗОР ДНЯ 🚨\n"
+            f"{target.first_name} за сутки набрал {day_sum}\n"
+            f"{random.choice(SHAME_JOKES)}"
+        )
+
+# ------------------ RUN ------------------
+async def main():
+    # 🔥 КРИТИЧЕСКИЙ ФИКС: убираем webhook
+    await bot.delete_webhook(drop_pending_updates=True)
+
+    logging.info("🤖 polling started")
+    await dp.start_polling(bot)
+
+if __name__ == "__main__":
+    asyncio.run(main())
