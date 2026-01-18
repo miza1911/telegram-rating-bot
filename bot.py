@@ -7,7 +7,7 @@ import logging
 from datetime import datetime, timedelta
 
 from aiogram import Bot, Dispatcher, types
-from aiogram.filters import CommandStart, Text
+from aiogram.filters import Command, CommandStart
 
 logging.basicConfig(level=logging.INFO)
 
@@ -117,17 +117,11 @@ def given_to(chat_id, f, t):
     )
     return cursor.fetchone()[0] or 0
 
-def progress_bar(current, total, length=10):
-    filled = int(current / total * length) if total else 0
-    empty = length - filled
-    return "🟩"*filled + "⬜"*empty
-
 # ---------- HANDLERS ----------
 @dp.message(CommandStart())
 async def start(m: types.Message):
     await m.answer("🐾 Рейтинговый бот активен. Используй /me, /top, /rich, /hate")
 
-# Ловим рейтинги через ответ на сообщение
 @dp.message()
 async def rating(m: types.Message):
     if not m.reply_to_message or not m.text:
@@ -158,6 +152,7 @@ async def rating(m: types.Message):
         used_free = min(minus_free, amount)
         remaining = amount - used_free
         minus_free -= used_free
+
         if remaining > 0:
             given = given_to(m.chat.id, voter.id, target.id)
             if given < remaining:
@@ -182,50 +177,67 @@ async def rating(m: types.Message):
     if total <= SHAME_LIMIT:
         await m.answer(f"🚨 ПОЗОР ДНЯ 🚨\n{get_name(target)} за сутки набрал {total}.")
 
-# ---------- КОМАНДЫ через Text фильтр (работают в группах) ----------
-@dp.message(Text(startswith="/me"))
+# ---------- COMMANDS ----------
+@dp.message(Command(commands=["me"]))
 async def me(m: types.Message):
     plus, minus = get_daily(m.chat.id, m.from_user.id)
-    cursor.execute("SELECT rating FROM rating WHERE chat_id=? AND user_id=?", (m.chat.id, m.from_user.id))
+
+    cursor.execute(
+        "SELECT rating FROM rating WHERE chat_id=? AND user_id=?",
+        (m.chat.id, m.from_user.id)
+    )
     rating = cursor.fetchone()
     rating = rating[0] if rating else 0
-    cursor.execute("SELECT SUM(amount) FROM daily_actions WHERE chat_id=? AND from_id=? AND amount>0", (m.chat.id, m.from_user.id))
+
+    cursor.execute(
+        "SELECT SUM(amount) FROM daily_actions WHERE chat_id=? AND from_id=? AND amount>0",
+        (m.chat.id, m.from_user.id)
+    )
     given_total = cursor.fetchone()[0] or 0
-    cursor.execute("SELECT SUM(amount) FROM daily_actions WHERE chat_id=? AND from_id=? AND amount<0", (m.chat.id, m.from_user.id))
+
+    cursor.execute(
+        "SELECT SUM(amount) FROM daily_actions WHERE chat_id=? AND from_id=? AND amount<0",
+        (m.chat.id, m.from_user.id)
+    )
     taken_total = abs(cursor.fetchone()[0] or 0)
 
     text = (
         f"📊 <b>Твоя статистика</b>\n"
         f"⭐ <b>Рейтинг:</b> {rating}\n"
-        f"➕ <b>Осталось плюсов:</b> {plus} {progress_bar(plus, DAILY_PLUS)}\n"
-        f"➖ <b>Минус-баланс:</b> {minus} {progress_bar(minus, DAILY_MINUS_FREE)}\n"
+        f"➕ <b>Осталось плюсов:</b> {plus}\n"
+        f"➖ <b>Минус-баланс:</b> {minus}\n"
         f"💰 <b>Отдал всего:</b> {given_total}\n"
         f"😈 <b>Забрал всего:</b> {taken_total}"
     )
     await m.answer(text, parse_mode="HTML")
 
-@dp.message(Text(startswith="/top"))
+@dp.message(Command(commands=["top"]))
 async def top(m: types.Message):
-    cursor.execute("SELECT user_id, rating FROM rating WHERE chat_id=? ORDER BY rating DESC LIMIT 10", (m.chat.id,))
+    cursor.execute(
+        "SELECT user_id, rating FROM rating WHERE chat_id=? ORDER BY rating DESC LIMIT 10",
+        (m.chat.id,)
+    )
     rows = cursor.fetchall()
     if not rows:
         await m.answer("Рейтинг пока пуст 😔")
         return
-    max_rating = max([r[1] for r in rows], default=1)
-    text = "🏆 <b>Топ участников</b>:\n\n"
+
+    text = "🏆 <b>Общий рейтинг чата</b>:\n\n"
     medals = ["🥇", "🥈", "🥉"]
+
     for i, (user_id, rating) in enumerate(rows, 1):
         try:
             user = await bot.get_chat_member(m.chat.id, user_id)
             name = user.user.first_name
         except:
             name = f"User {user_id}"
-        bar = progress_bar(rating, max_rating)
+
         medal = medals[i-1] if i <= 3 else f"{i}."
-        text += f"{medal} {name} — {rating} {bar}\n"
+        text += f"{medal} {name} — {rating}\n"
+
     await m.answer(text, parse_mode="HTML")
 
-@dp.message(Text(startswith="/rich"))
+@dp.message(Command(commands=["rich"]))
 async def rich(m: types.Message):
     cursor.execute(
         "SELECT from_id, SUM(amount) FROM daily_actions "
@@ -236,7 +248,6 @@ async def rich(m: types.Message):
     if not rows:
         await m.answer("Пока никто не раздавал плюсы 😔")
         return
-    max_val = max([r[1] for r in rows], default=1)
     text = "💎 <b>Самые щедрые за сутки</b>:\n"
     for i, r in enumerate(rows, 1):
         try:
@@ -244,11 +255,10 @@ async def rich(m: types.Message):
             name = user.user.first_name
         except:
             name = f"User {r[0]}"
-        bar = progress_bar(r[1], max_val)
-        text += f"{i}. {name} — {r[1]} {bar}\n"
+        text += f"{i}. {name} — {r[1]}\n"
     await m.answer(text, parse_mode="HTML")
 
-@dp.message(Text(startswith="/hate"))
+@dp.message(Command(commands=["hate"]))
 async def hate(m: types.Message):
     cursor.execute(
         "SELECT from_id, SUM(amount) FROM daily_actions "
@@ -259,7 +269,6 @@ async def hate(m: types.Message):
     if not rows:
         await m.answer("Пока никто не раздавал минусы 😔")
         return
-    max_val = max([abs(r[1]) for r in rows], default=1)
     text = "😈 <b>Хейтеры за сутки</b>:\n"
     for i, r in enumerate(rows, 1):
         try:
@@ -267,8 +276,7 @@ async def hate(m: types.Message):
             name = user.user.first_name
         except:
             name = f"User {r[0]}"
-        bar = progress_bar(abs(r[1]), max_val)
-        text += f"{i}. {name} — {abs(r[1])} {bar}\n"
+        text += f"{i}. {name} — {abs(r[1])}\n"
     await m.answer(text, parse_mode="HTML")
 
 # ---------- RUN ----------
@@ -278,3 +286,4 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+
