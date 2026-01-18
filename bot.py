@@ -1,228 +1,252 @@
-import asyncio
+import os
 import re
-from datetime import datetime, date
-from collections import defaultdict
+import random
+import sqlite3
+import asyncio
+import logging
+from datetime import datetime, timedelta
 
-from aiogram import Bot, Dispatcher, Router, types
-from aiogram.filters import Command, Text
-from aiogram.enums import ParseMode
-from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
+from aiogram import Bot, Dispatcher, types
+from aiogram.filters import Command
 
-TOKEN = "PASTE_YOUR_TOKEN_HERE"
+logging.basicConfig(level=logging.INFO)
 
-bot = Bot(TOKEN, parse_mode=ParseMode.HTML)
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+if not BOT_TOKEN:
+    raise RuntimeError("BOT_TOKEN is not set")
+
+bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
-router = Router()
-dp.include_router(router)
 
-# ──────────────── КОНСТАНТЫ ────────────────
+# ---------- DB ----------
+conn = sqlite3.connect("ratings.db")
+cursor = conn.cursor()
+
+cursor.executescript("""
+CREATE TABLE IF NOT EXISTS rating (
+    chat_id INTEGER,
+    user_id INTEGER,
+    rating INTEGER,
+    PRIMARY KEY (chat_id, user_id)
+);
+
+CREATE TABLE IF NOT EXISTS daily_actions (
+    chat_id INTEGER,
+    from_id INTEGER,
+    to_id INTEGER,
+    amount INTEGER,
+    ts INTEGER
+);
+
+CREATE TABLE IF NOT EXISTS daily_balance (
+    chat_id INTEGER,
+    user_id INTEGER,
+    plus_left INTEGER,
+    minus_free INTEGER,
+    date TEXT,
+    PRIMARY KEY (chat_id, user_id)
+);
+""")
+conn.commit()
+
+# ---------- CONST ----------
 DAILY_PLUS = 100
-DAILY_MINUS = 50
+DAILY_MINUS_FREE = 50
 SHAME_LIMIT = -500
 
 LOW_BALANCE_PHRASES = [
-    "😬 Осторожно, баллы на исходе",
-    "🪫 Ты почти пуст",
-    "🐭 Балансовая диета",
-    "⚠️ Ещё немного — и всё",
-    "🥲 Баллы тают",
-    "📉 Финансовый кризис",
-    "🧮 Математика плачет",
-    "💸 Почти банкрот",
-    "😏 Щедрость дорого стоит",
-    "🪦 Тут похоронены баллы",
-    "🫠 Осталось совсем чуть-чуть",
-    "😮‍💨 Последние силы",
-    "📛 Балльный SOS",
-    "🪙 Мелочь звенит",
-    "😈 Баланс страдает",
-    "🥴 Почти ноль",
-    "🧠 Подумай, прежде чем тратить",
-    "🫣 Стыдно мало",
-    "🦴 Грызёшь остатки",
-    "⚰️ Баллам плохо"
+    "⚠️ Осторожно, щедрость на исходе",
+    "🪫 Баллы тают быстрее доверия",
+    "💸 Ты почти нищий… баллами",
+    "😬 Осталось меньше 50, держись",
+    "🧮 Математика намекает остановиться",
+    "🥲 Скоро придётся смотреть, а не ставить",
+    "🚨 Баланс краснеет",
+    "🐭 Эконом-режим включён",
+    "🫠 Баллы испаряются",
+    "⚖️ Справедливость требует паузы",
+    "🎭 Осталось мало аплодисментов",
+    "📉 График идёт вниз",
+    "🧊 Остываешь, дружище",
+    "🕯 Последние искры плюсов",
+    "🪙 Монет почти нет",
+    "🤏 Щепотка баллов осталась",
+    "📦 Пустеющий склад",
+    "🚪 Баллы собираются уходить",
+    "🫥 Скоро ничего не сможешь",
+    "⌛ Почти всё потрачено"
 ]
 
-# ──────────────── ХРАНИЛИЩЕ ────────────────
-users = defaultdict(lambda: {
-    "rating": 0,
-    "given": defaultdict(int),  # кому сколько дал
-    "plus_left": DAILY_PLUS,
-    "minus_left": DAILY_MINUS,
-    "daily_delta": 0,
-    "last_reset": date.today(),
-    "given_total": 0,
-    "taken_total": 0
-})
+RATING_RE = re.compile(r"([+-])\s*(\d{1,3})")
 
+# ---------- HELPERS ----------
+def today():
+    return datetime.utcnow().strftime("%Y-%m-%d")
 
-# ──────────────── ВСПОМОГАТЕЛЬНОЕ ────────────────
-def reset_if_new_day(uid):
-    u = users[uid]
-    if u["last_reset"] != date.today():
-        u["plus_left"] = DAILY_PLUS
-        u["minus_left"] = DAILY_MINUS
-        u["daily_delta"] = 0
-        u["last_reset"] = date.today()
+def get_name(user: types.User):
+    return user.first_name
 
-
-def keyboard():
-    return ReplyKeyboardMarkup(
-        keyboard=[
-            [KeyboardButton(text="📊 Моя статистика"), KeyboardButton(text="🏆 Общий рейтинг")],
-            [KeyboardButton(text="💰 Самые щедрые"), KeyboardButton(text="😈 Хейтеры")],
-            [KeyboardButton(text="📅 Статистика за сутки")],
-            [KeyboardButton(text="📜 Правила")]
-        ],
-        resize_keyboard=True
+def get_daily(chat_id, user_id):
+    cursor.execute(
+        "SELECT plus_left, minus_free, date FROM daily_balance WHERE chat_id=? AND user_id=?",
+        (chat_id, user_id)
     )
+    row = cursor.fetchone()
 
+    if not row or row[2] != today():
+        cursor.execute(
+            "REPLACE INTO daily_balance VALUES (?, ?, ?, ?, ?)",
+            (chat_id, user_id, DAILY_PLUS, DAILY_MINUS_FREE, today())
+        )
+        conn.commit()
+        return DAILY_PLUS, DAILY_MINUS_FREE
 
-# ──────────────── СТАРТ ────────────────
-@router.message(Command("start"))
-async def start(m: types.Message):
-    await m.answer("✅ Бот жив. Рейтинг работает.", reply_markup=keyboard())
+    return row[0], row[1]
 
+def update_daily(chat_id, user_id, plus, minus):
+    cursor.execute(
+        "UPDATE daily_balance SET plus_left=?, minus_free=? WHERE chat_id=? AND user_id=?",
+        (plus, minus, chat_id, user_id)
+    )
+    conn.commit()
 
-# ──────────────── РЕЙТИНГ ЧЕРЕЗ REPLY ────────────────
-@router.message()
-async def rating_handler(m: types.Message):
-    if not m.reply_to_message:
+def change_rating(chat_id, user_id, delta):
+    cursor.execute(
+        "INSERT INTO rating VALUES (?, ?, ?) "
+        "ON CONFLICT(chat_id, user_id) DO UPDATE SET rating = rating + ?",
+        (chat_id, user_id, delta, delta)
+    )
+    conn.commit()
+
+def log_action(chat_id, f, t, amt):
+    cursor.execute(
+        "INSERT INTO daily_actions VALUES (?, ?, ?, ?, ?)",
+        (chat_id, f, t, amt, int(datetime.utcnow().timestamp()))
+    )
+    conn.commit()
+
+def given_to(chat_id, f, t):
+    cursor.execute(
+        "SELECT SUM(amount) FROM daily_actions "
+        "WHERE chat_id=? AND from_id=? AND to_id=? AND amount>0",
+        (chat_id, f, t)
+    )
+    return cursor.fetchone()[0] or 0
+
+# ---------- HANDLERS ----------
+@dp.message()
+async def rating(m: types.Message):
+    if not m.reply_to_message or not m.text:
         return
 
-    match = re.search(r'([+-]\d+)', m.text or "")
+    match = RATING_RE.search(m.text)
     if not match:
         return
 
-    amount = int(match.group(1))
-    giver = m.from_user.id
-    receiver = m.reply_to_message.from_user.id
+    sign, num = match.groups()
+    amount = int(num)
 
-    if giver == receiver:
+    voter = m.from_user
+    target = m.reply_to_message.from_user
+
+    if voter.id == target.id:
         await m.reply("🤡 Сам себе — запрещено.")
         return
 
-    reset_if_new_day(giver)
-    reset_if_new_day(receiver)
+    plus_left, minus_free = get_daily(m.chat.id, voter.id)
 
-    g = users[giver]
-    r = users[receiver]
-
-    # ───── ПЛЮС ─────
-    if amount > 0:
-        if g["plus_left"] < amount:
-            await m.reply("😏 Баллов не хватит, щедрец.")
+    if sign == "+":
+        if plus_left < amount:
+            await m.reply("💸 Баллов не хватает.")
             return
+        plus_left -= amount
+        delta = amount
 
-        g["plus_left"] -= amount
-        g["given"][receiver] += amount
-        g["given_total"] += amount
-
-        r["rating"] += amount
-        r["daily_delta"] += amount
-
-    # ───── МИНУС ─────
     else:
-        take = abs(amount)
+        # минус
+        used_free = min(minus_free, amount)
+        remaining = amount - used_free
 
-        # сначала бесплатные минусы
-        free = min(g["minus_left"], take)
-        g["minus_left"] -= free
-        take -= free
+        minus_free -= used_free
 
-        # возврат плюсов
-        if take > 0:
-            if g["given"][receiver] < take:
-                await m.reply("😈 Сначала дай — потом забирай.")
+        if remaining > 0:
+            given = given_to(m.chat.id, voter.id, target.id)
+            if given < remaining:
+                await m.reply("🐍 Сначала дай, потом забирай.")
                 return
-            g["given"][receiver] -= take
-            g["plus_left"] += take
+            plus_left += remaining  # ВОЗВРАТ
+        delta = -amount
 
-        r["rating"] -= abs(amount)
-        r["daily_delta"] -= abs(amount)
-        g["taken_total"] += abs(amount)
+    update_daily(m.chat.id, voter.id, plus_left, minus_free)
+    change_rating(m.chat.id, target.id, delta)
+    log_action(m.chat.id, voter.id, target.id, delta)
 
-    if g["plus_left"] < 50:
-        import random
+    if plus_left < 50:
         await m.reply(random.choice(LOW_BALANCE_PHRASES))
 
-    if r["daily_delta"] <= SHAME_LIMIT:
-        await m.answer(f"🧻 <b>ПОЗОР</b>\n{m.reply_to_message.from_user.first_name} набрал больше −500 за сутки.")
+    cursor.execute(
+        "SELECT SUM(amount) FROM daily_actions WHERE chat_id=? AND to_id=? AND ts > ?",
+        (m.chat.id, target.id, int((datetime.utcnow()-timedelta(days=1)).timestamp()))
+    )
+    total = cursor.fetchone()[0] or 0
 
+    if total <= SHAME_LIMIT:
+        await m.answer(
+            f"🚨 ПОЗОР ДНЯ 🚨\n{get_name(target)} за сутки набрал {total}."
+        )
 
-# ──────────────── КОМАНДЫ / КНОПКИ ────────────────
-@router.message(Command("me"))
-@router.message(Text("📊 Моя статистика"))
+# ---------- COMMANDS ----------
+@dp.message(Command("me"))
 async def me(m: types.Message):
-    u = users[m.from_user.id]
-    reset_if_new_day(m.from_user.id)
+    plus, minus = get_daily(m.chat.id, m.from_user.id)
     await m.answer(
-        f"📊 <b>Твоя статистика</b>\n"
-        f"⭐ Рейтинг: {u['rating']}\n"
-        f"➕ Осталось плюсов: {u['plus_left']}\n"
-        f"➖ Минус-баланс: {u['minus_left']}\n"
-        f"💰 Отдал всего: {u['given_total']}\n"
-        f"😈 Забрал всего: {u['taken_total']}"
+        f"👤 {get_name(m.from_user)}\n"
+        f"➕ Плюсы: {plus}\n"
+        f"➖ Минусы: {minus}/50"
     )
 
-
-@router.message(Command("top"))
-@router.message(Text("🏆 Общий рейтинг"))
-async def top(m: types.Message):
-    top = sorted(users.items(), key=lambda x: x[1]["rating"], reverse=True)[:10]
-    text = "🏆 <b>Топ рейтинга</b>\n"
-    for i, (uid, u) in enumerate(top, 1):
-        text += f"{i}. {uid} — {u['rating']}\n"
-    await m.answer(text)
-
-
-@router.message(Command("rich"))
-@router.message(Text("💰 Самые щедрые"))
+@dp.message(Command("rich"))
 async def rich(m: types.Message):
-    top = sorted(users.items(), key=lambda x: x[1]["given_total"], reverse=True)[:10]
-    text = "💰 <b>Самые щедрые</b>\n"
-    for i, (uid, u) in enumerate(top, 1):
-        text += f"{i}. {uid} — {u['given_total']}\n"
-    await m.answer(text)
-
-
-@router.message(Command("hate"))
-@router.message(Text("😈 Хейтеры"))
-async def hate(m: types.Message):
-    top = sorted(users.items(), key=lambda x: x[1]["taken_total"], reverse=True)[:10]
-    text = "😈 <b>Хейтеры</b>\n"
-    for i, (uid, u) in enumerate(top, 1):
-        text += f"{i}. {uid} — {u['taken_total']}\n"
-    await m.answer(text)
-
-
-@router.message(Command("day"))
-@router.message(Text("📅 Статистика за сутки"))
-async def day(m: types.Message):
-    text = "📅 <b>Сутки</b>\n"
-    for uid, u in users.items():
-        if u["daily_delta"] != 0:
-            text += f"{uid}: {u['daily_delta']}\n"
-    await m.answer(text or "😴 Сегодня тихо.")
-
-
-@router.message(Command("rules"))
-@router.message(Text("📜 Правила"))
-async def rules(m: types.Message):
-    await m.answer(
-        "📜 <b>Система баллов</b>\n\n"
-        "➕ У каждого 100 плюсов в сутки\n"
-        "➖ 50 минусов — бесплатно\n"
-        "♻️ Потом минусы возвращают плюсы\n"
-        "🚫 Нельзя забирать у тех, кому не давал\n"
-        "🤡 Сам себе — нельзя\n"
-        
+    cursor.execute(
+        "SELECT from_id, SUM(amount) FROM daily_actions "
+        "WHERE chat_id=? AND amount>0 GROUP BY from_id ORDER BY SUM(amount) DESC LIMIT 5",
+        (m.chat.id,)
     )
+    rows = cursor.fetchall()
+    text = "💎 Самые щедрые:\n"
+    for i, r in enumerate(rows, 1):
+        text += f"{i}. {r[1]}\n"
+    await m.answer(text)
 
+@dp.message(Command("hate"))
+async def hate(m: types.Message):
+    cursor.execute(
+        "SELECT from_id, SUM(amount) FROM daily_actions "
+        "WHERE chat_id=? AND amount<0 GROUP BY from_id ORDER BY SUM(amount) ASC LIMIT 5",
+        (m.chat.id,)
+    )
+    rows = cursor.fetchall()
+    text = "😈 Хейтеры:\n"
+    for i, r in enumerate(rows, 1):
+        text += f"{i}. {abs(r[1])}\n"
+    await m.answer(text)
 
-# ──────────────── ЗАПУСК ────────────────
+@dp.message(Command("top"))
+async def top(m: types.Message):
+    cursor.execute(
+        "SELECT user_id, rating FROM rating WHERE chat_id=? ORDER BY rating DESC LIMIT 10",
+        (m.chat.id,)
+    )
+    rows = cursor.fetchall()
+    text = "🏆 Рейтинг:\n"
+    for i, r in enumerate(rows, 1):
+        text += f"{i}. {r[1]}\n"
+    await m.answer(text)
+
+# ---------- RUN ----------
 async def main():
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
     asyncio.run(main())
+
