@@ -4,97 +4,119 @@ import random
 import sqlite3
 import asyncio
 import logging
-from datetime import datetime
+from datetime import date
 
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
 
-# ------------------ LOGGING ------------------
+# ----------------- CONFIG -----------------
 logging.basicConfig(level=logging.INFO)
-logging.info("🚀 bot.py started")
-
-# ------------------ TOKEN ------------------
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 if not BOT_TOKEN:
     raise RuntimeError("BOT_TOKEN is not set")
 
-# ------------------ BOT ------------------
+DAILY_PLUS_LIMIT = 100
+DAILY_MINUS_LIMIT = 50
+LOW_BALANCE_THRESHOLD = 50
+SHAME_THRESHOLD = -500
+
+# ----------------- BOT -----------------
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
-# ------------------ DATABASE ------------------
-DB_FILE = "ratings.db"
-
-# При новом деплое обнуляем базу
-if os.path.exists(DB_FILE):
-    os.remove(DB_FILE)
-
-conn = sqlite3.connect(DB_FILE)
+# ----------------- DATABASE -----------------
+conn = sqlite3.connect("ratings.db")
 cursor = conn.cursor()
 
-cursor.execute("""
+cursor.executescript("""
 CREATE TABLE IF NOT EXISTS ratings (
     chat_id INTEGER,
     user_id INTEGER,
     rating INTEGER,
     PRIMARY KEY (chat_id, user_id)
-)
-""")
+);
 
-cursor.execute("""
-CREATE TABLE IF NOT EXISTS actions (
-    chat_id INTEGER,
-    voter_id INTEGER,
-    type TEXT,
-    amount INTEGER
-)
-""")
-
-cursor.execute("""
-CREATE TABLE IF NOT EXISTS daily_negative (
+CREATE TABLE IF NOT EXISTS daily_balance (
     chat_id INTEGER,
     user_id INTEGER,
-    date TEXT,
-    total INTEGER,
-    announced INTEGER DEFAULT 0,
-    PRIMARY KEY (chat_id, user_id, date)
-)
-""")
+    day TEXT,
+    plus_left INTEGER,
+    minus_left INTEGER,
+    warned INTEGER DEFAULT 0,
+    PRIMARY KEY (chat_id, user_id, day)
+);
 
+CREATE TABLE IF NOT EXISTS transfers (
+    chat_id INTEGER,
+    from_user INTEGER,
+    to_user INTEGER,
+    given INTEGER,
+    PRIMARY KEY (chat_id, from_user, to_user)
+);
+""")
 conn.commit()
 
-# ------------------ CONSTANTS ------------------
-RATING_PATTERN = re.compile(r"([+-])\s*(\d{1,3})")
-NEGATIVE_LIMIT = 500
-
-POSITIVE_EMOJI = ["😎", "🔥", "💪", "🚀", "✨", "😁", "👏"]
-NEGATIVE_EMOJI = ["😡", "💀", "🤡", "👎", "😬", "🥶"]
-
-SHAME_EMOJI = ["🪦", "🚨", "💀", "🤡", "👎", "😬", "🧻"]
-
-SHAME_JOKES = [
-    "Чат в шоке.",
-    "Это уже диагноз.",
-    "Так даже враги не делают.",
-    "Рекорд, но со знаком минус.",
-    "История будет помнить.",
-    "Соболезнуем.",
-    "Никто не ожидал, но все знали.",
-    "Сегодня не твой день.",
-    "Интернет всё помнит.",
-    "Даже клавиатура плачет.",
-    "Минус за минусом.",
-    "Без комментариев.",
-    "Лучше бы молчал.",
-    "Остановись.",
-    "Это фиаско.",
-    "Поздравляем, ты смог.",
-    "Такое не отмывается.",
-    "Мама, я в телевизоре."
+# ----------------- TEXTS -----------------
+LOW_BALANCE_TEXTS = [
+    "Баллы тают. Осталось меньше 50. Дальше - осознанно.",
+    "Баланс худеет. Пора выбирать любимчиков.",
+    "Ты входишь в зону риска. Баллов становится мало.",
+    "Осталось меньше 50. Срач становится дорогим.",
+    "Баллы заканчиваются, характер - нет.",
+    "Теперь каждый реплай имеет цену.",
+    "Баланс почти пуст. Время настоящих решений.",
+    "Ты уже не щедрый. Ты избирательный.",
+    "Баллы на исходе. Осторожнее с эмоциями.",
+    "Ниже 50 - это когда начинаешь думать.",
+    "Эконом-режим активирован.",
+    "Баллов всё меньше. Репутация дороже.",
+    "Ты приближаешься к финансовой тишине.",
+    "Каждый плюс теперь чувствуется.",
+    "Баланс проседает. Паники нет, но…",
+    "Дальше - только по любви.",
+    "Минусовать можно, но осторожно.",
+    "Баллы не бесконечны. Увы.",
+    "Расточительность - враг рейтинга.",
+    "Конец халяве. Началась математика."
 ]
 
-# ------------------ HELPERS ------------------
-def change_rating(chat_id: int, user_id: int, delta: int) -> int:
+SHAME_TEXT = (
+    "🚨 ПОЗОР ДНЯ 🚨\n\n"
+    "{name} набрал {rating} за сутки.\n"
+    "Коллектив официально недоволен."
+)
+
+# ----------------- HELPERS -----------------
+def today():
+    return date.today().isoformat()
+
+def get_or_create_balance(chat_id, user_id):
+    cursor.execute("""
+        SELECT plus_left, minus_left, warned
+        FROM daily_balance
+        WHERE chat_id=? AND user_id=? AND day=?
+    """, (chat_id, user_id, today()))
+    row = cursor.fetchone()
+
+    if row:
+        return row
+
+    cursor.execute("""
+        INSERT INTO daily_balance (chat_id, user_id, day, plus_left, minus_left)
+        VALUES (?, ?, ?, ?, ?)
+    """, (chat_id, user_id, today(), DAILY_PLUS_LIMIT, DAILY_MINUS_LIMIT))
+    conn.commit()
+    return DAILY_PLUS_LIMIT, DAILY_MINUS_LIMIT, 0
+
+def update_balance(chat_id, user_id, plus_left, minus_left, warned):
+    cursor.execute("""
+        UPDATE daily_balance
+        SET plus_left=?, minus_left=?, warned=?
+        WHERE chat_id=? AND user_id=? AND day=?
+    """, (plus_left, minus_left, warned, chat_id, user_id, today()))
+    conn.commit()
+
+def change_rating(chat_id, user_id, delta):
     cursor.execute(
         "SELECT rating FROM ratings WHERE chat_id=? AND user_id=?",
         (chat_id, user_id)
@@ -113,94 +135,56 @@ def change_rating(chat_id: int, user_id: int, delta: int) -> int:
             "UPDATE ratings SET rating=? WHERE chat_id=? AND user_id=?",
             (rating, chat_id, user_id)
         )
-
     conn.commit()
     return rating
 
-def today():
-    return datetime.utcnow().strftime("%Y-%m-%d")
+def remember_transfer(chat_id, from_id, to_id, amount):
+    cursor.execute("""
+        INSERT INTO transfers (chat_id, from_user, to_user, given)
+        VALUES (?, ?, ?, ?)
+        ON CONFLICT(chat_id, from_user, to_user)
+        DO UPDATE SET given = given + ?
+    """, (chat_id, from_id, to_id, amount, amount))
+    conn.commit()
 
-# ------------------ COMMANDS ------------------
+def has_given_before(chat_id, from_id, to_id):
+    cursor.execute("""
+        SELECT given FROM transfers
+        WHERE chat_id=? AND from_user=? AND to_user=? AND given > 0
+    """, (chat_id, from_id, to_id))
+    return cursor.fetchone() is not None
+
+# ----------------- COMMANDS -----------------
 @dp.message(Command("start"))
 async def start(message: types.Message):
-    await message.answer("✅ Бот жив. Рейтинг считается.")
+    await message.answer("✅ Бот жив. Система баллов активна.")
 
-@dp.message(Command("rating"))
-async def rating(message: types.Message):
+@dp.message(Command("me"))
+async def me(message: types.Message):
+    chat_id = message.chat.id
+    user = message.from_user
+
     cursor.execute(
-        "SELECT user_id, rating FROM ratings WHERE chat_id=? ORDER BY rating DESC",
-        (message.chat.id,)
+        "SELECT rating FROM ratings WHERE chat_id=? AND user_id=?",
+        (chat_id, user.id)
     )
-    rows = cursor.fetchall()
+    rating = cursor.fetchone()
+    rating = rating[0] if rating else 0
 
-    if not rows:
-        await message.answer("📊 В чате пока нет рейтинга")
-        return
+    plus_left, minus_left, _ = get_or_create_balance(chat_id, user.id)
 
-    text = "🏆 **Рейтинг чата:**\n\n"
-    for i, (uid, rating) in enumerate(rows, 1):
-        try:
-            member = await bot.get_chat_member(message.chat.id, uid)
-            name = member.user.first_name
-        except:
-            name = "Пользователь"
-        text += f"{i}. {name} — {rating}\n"
+    await message.answer(
+        f"🐾 Твоя статистика\n\n"
+        f"Имя: {user.first_name}\n"
+        f"Общий рейтинг: {rating}\n\n"
+        f"Сегодня:\n"
+        f"➕ Осталось плюсов: {plus_left}/100\n"
+        f"➖ Минусы: {minus_left}/50"
+    )
 
-    await message.answer(text)
+# ----------------- RATING HANDLER -----------------
+RATING_PATTERN = re.compile(r"([+-])(\d{1,3})")
 
-@dp.message(Command("top_plus"))
-async def top_plus(message: types.Message):
-    cursor.execute("""
-        SELECT voter_id, SUM(amount) FROM actions
-        WHERE chat_id=? AND type='plus'
-        GROUP BY voter_id
-        ORDER BY SUM(amount) DESC
-        LIMIT 5
-    """, (message.chat.id,))
-    rows = cursor.fetchall()
-
-    if not rows:
-        await message.answer("😇 Пока никто не ставил плюсы")
-        return
-
-    text = "💖 **Самые добрые:**\n\n"
-    for i, (uid, total) in enumerate(rows, 1):
-        try:
-            member = await bot.get_chat_member(message.chat.id, uid)
-            name = member.user.first_name
-        except:
-            name = "Пользователь"
-        text += f"{i}. {name} — +{total}\n"
-
-    await message.answer(text)
-
-@dp.message(Command("top_minus"))
-async def top_minus(message: types.Message):
-    cursor.execute("""
-        SELECT voter_id, SUM(amount) FROM actions
-        WHERE chat_id=? AND type='minus'
-        GROUP BY voter_id
-        ORDER BY SUM(amount) DESC
-        LIMIT 5
-    """, (message.chat.id,))
-    rows = cursor.fetchall()
-
-    if not rows:
-        await message.answer("😇 Пока никто не ставил минусы")
-        return
-
-    text = "💀 **Главные хейтеры:**\n\n"
-    for i, (uid, total) in enumerate(rows, 1):
-        try:
-            member = await bot.get_chat_member(message.chat.id, uid)
-            name = member.user.first_name
-        except:
-            name = "Пользователь"
-        text += f"{i}. {name} — −{total}\n"
-
-    await message.answer(text)
-
-# ------------------ RATING HANDLER ------------------
 @dp.message()
 async def rating_handler(message: types.Message):
     if not message.reply_to_message or not message.text:
@@ -212,70 +196,64 @@ async def rating_handler(message: types.Message):
 
     sign, amount_str = match.groups()
     amount = int(amount_str)
-
     if not 1 <= amount <= 100:
         return
 
     voter = message.from_user
     target = message.reply_to_message.from_user
+    chat_id = message.chat.id
 
-    if not target or voter.id == target.id:
+    if voter.id == target.id:
+        await message.reply("Сам себе - это терапия, а не рейтинг 😏")
         return
 
-    delta = amount if sign == "+" else -amount
-    change_rating(message.chat.id, target.id, delta)
+    plus_left, minus_left, warned = get_or_create_balance(chat_id, voter.id)
 
-    cursor.execute(
-        "INSERT INTO actions VALUES (?, ?, ?, ?)",
-        (message.chat.id, voter.id, "plus" if delta > 0 else "minus", amount)
-    )
+    # ---------- PLUS ----------
+    if sign == "+":
+        if plus_left < amount:
+            await message.reply("У тебя столько плюсов нет. Экономь 😌")
+            return
 
-    # ---- DAILY SHAME ----
-    if delta < 0:
-        d = today()
-        cursor.execute("""
-            SELECT total, announced FROM daily_negative
-            WHERE chat_id=? AND user_id=? AND date=?
-        """, (message.chat.id, target.id, d))
-        row = cursor.fetchone()
+        plus_left -= amount
+        remember_transfer(chat_id, voter.id, target.id, amount)
+        new_rating = change_rating(chat_id, target.id, amount)
 
-        total = amount
-        announced = 0
-
-        if row:
-            total += row[0]
-            announced = row[1]
-
-            cursor.execute("""
-                UPDATE daily_negative SET total=?
-                WHERE chat_id=? AND user_id=? AND date=?
-            """, (total, message.chat.id, target.id, d))
+    # ---------- MINUS ----------
+    else:
+        if minus_left >= amount:
+            minus_left -= amount
         else:
-            cursor.execute("""
-                INSERT INTO daily_negative VALUES (?, ?, ?, ?, 0)
-            """, (message.chat.id, target.id, d, total))
+            if not has_given_before(chat_id, voter.id, target.id):
+                await message.reply(
+                    "Прежде чем забирать - надо сначала дать 😏"
+                )
+                return
 
-        if total >= NEGATIVE_LIMIT and not announced:
-            joke = random.choice(SHAME_JOKES)
-            emoji = random.choice(SHAME_EMOJI)
+        new_rating = change_rating(chat_id, target.id, -amount)
 
-            await message.answer(
-                f"{emoji} **ПОЗОР ДНЯ** {emoji}\n"
-                f"{target.first_name} получил −{total} за сутки.\n"
-                f"{joke}"
+    # ---------- WARN LOW BALANCE ----------
+    if plus_left < LOW_BALANCE_THRESHOLD and not warned:
+        warned = 1
+        await message.answer(
+            random.choice(LOW_BALANCE_TEXTS)
+        )
+
+    update_balance(chat_id, voter.id, plus_left, minus_left, warned)
+
+    # ---------- SHAME ----------
+    if new_rating <= SHAME_THRESHOLD:
+        await message.answer(
+            SHAME_TEXT.format(
+                name=target.first_name,
+                rating=new_rating
             )
+        )
 
-            cursor.execute("""
-                UPDATE daily_negative SET announced=1
-                WHERE chat_id=? AND user_id=? AND date=?
-            """, (message.chat.id, target.id, d))
-
-    conn.commit()
-
-# ------------------ RUN ------------------
+# ----------------- RUN -----------------
 async def main():
-    logging.info("🤖 starting polling")
-    await dp.start_polling(bot, allowed_updates=["message"])
+    logging.info("🤖 Bot started")
+    await dp.start_polling(bot)
 
 if __name__ == "__main__":
     asyncio.run(main())
