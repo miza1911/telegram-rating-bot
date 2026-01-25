@@ -4,7 +4,7 @@ import random
 import sqlite3
 import asyncio
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
@@ -46,8 +46,6 @@ CREATE TABLE IF NOT EXISTS daily_balance (
     chat_id INTEGER,
     user_id INTEGER,
     plus_left INTEGER,
-    minus_left INTEGER,
-    warned INTEGER,
     date TEXT,
     PRIMARY KEY (chat_id, user_id)
 );
@@ -55,19 +53,10 @@ CREATE TABLE IF NOT EXISTS daily_balance (
 conn.commit()
 
 # ------------------ CONSTANTS ------------------
-DAILY_PLUS = 100
-DAILY_MINUS = 50
+DAILY_BALANCE = 200
 SHAME_LIMIT = -500
 
 RATING_PATTERN = re.compile(r"([+-])\s*(\d{1,3})")
-
-LOW_PLUS_WARNINGS = [
-    "⚠️ Плюсы на исходе",
-    "💸 Осталось меньше 50 плюсов",
-    "😬 Щедрость заканчивается",
-    "📉 Плюсов почти нет",
-    "🫣 Ты почти нищий по плюсам"
-]
 
 SHAME_JOKES = [
     "Интернет всё помнит.",
@@ -77,53 +66,43 @@ SHAME_JOKES = [
     "История запомнит этот день."
 ]
 
-# ------------------ HELPERS ------------------
-def today():
-    return datetime.utcnow().strftime("%Y-%m-%d")
+# ------------------ TIME (MOSCOW) ------------------
+MSK = timezone(timedelta(hours=3))
 
+def today():
+    return datetime.now(MSK).strftime("%Y-%m-%d")
+
+# ------------------ HELPERS ------------------
 def get_balance(chat_id, user_id):
     cursor.execute(
-        "SELECT plus_left, minus_left, warned, date FROM daily_balance "
-        "WHERE chat_id=? AND user_id=?",
+        "SELECT plus_left, date FROM daily_balance WHERE chat_id=? AND user_id=?",
         (chat_id, user_id)
     )
     row = cursor.fetchone()
 
-    if not row or row[3] != today():
+    if not row or row[1] != today():
         cursor.execute(
-            "REPLACE INTO daily_balance VALUES (?, ?, ?, ?, ?, ?)",
-            (chat_id, user_id, DAILY_PLUS, DAILY_MINUS, 0, today())
+            "REPLACE INTO daily_balance VALUES (?, ?, ?, ?)",
+            (chat_id, user_id, DAILY_BALANCE, today())
         )
         conn.commit()
-        return DAILY_PLUS, DAILY_MINUS, 0
+        return DAILY_BALANCE
 
-    return row[0], row[1], row[2]
+    return row[0]
 
-def update_balance(chat_id, user_id, plus, minus, warned):
+def update_balance(chat_id, user_id, plus):
     cursor.execute(
-        "UPDATE daily_balance SET plus_left=?, minus_left=?, warned=? "
-        "WHERE chat_id=? AND user_id=?",
-        (plus, minus, warned, chat_id, user_id)
+        "UPDATE daily_balance SET plus_left=? WHERE chat_id=? AND user_id=?",
+        (plus, chat_id, user_id)
     )
     conn.commit()
 
 def change_rating(chat_id, user_id, delta):
     cursor.execute(
-        "SELECT rating FROM ratings WHERE chat_id=? AND user_id=?",
-        (chat_id, user_id)
+        "INSERT INTO ratings VALUES (?, ?, ?) "
+        "ON CONFLICT(chat_id, user_id) DO UPDATE SET rating = rating + ?",
+        (chat_id, user_id, delta, delta)
     )
-    row = cursor.fetchone()
-
-    if row is None:
-        cursor.execute(
-            "INSERT INTO ratings VALUES (?, ?, ?)",
-            (chat_id, user_id, delta)
-        )
-    else:
-        cursor.execute(
-            "UPDATE ratings SET rating=? WHERE chat_id=? AND user_id=?",
-            (row[0] + delta, chat_id, user_id)
-        )
     conn.commit()
 
 def log_action(chat_id, f, t, amt):
@@ -133,63 +112,45 @@ def log_action(chat_id, f, t, amt):
     )
     conn.commit()
 
-def total_given(chat_id, f, t):
-    cursor.execute(
-        "SELECT SUM(amount) FROM actions "
-        "WHERE chat_id=? AND from_id=? AND to_id=? AND amount>0",
-        (chat_id, f, t)
-    )
-    return cursor.fetchone()[0] or 0
-
 # ------------------ COMMANDS ------------------
 @dp.message(Command("start"))
 async def start(m: types.Message):
-    await m.answer("✅ Бот жив. Рейтинг считается.")
+    await m.answer(
+        "✅ Бот активен\n"
+        "🎯 У каждого 200 баллов в сутки\n"
+        "🔄 Обновление — каждый день в 00:00 по Москве"
+    )
 
 @dp.message(Command("me"))
 async def me(m: types.Message):
-    chat_id = m.chat.id
-    user_id = m.from_user.id
-
-    plus, minus, _ = get_balance(chat_id, user_id)
+    balance = get_balance(m.chat.id, m.from_user.id)
 
     cursor.execute(
         "SELECT rating FROM ratings WHERE chat_id=? AND user_id=?",
-        (chat_id, user_id)
+        (m.chat.id, m.from_user.id)
     )
-    row = cursor.fetchone()
-    rating = row[0] if row else 0
+    rating = cursor.fetchone()
+    rating = rating[0] if rating else 0
 
     cursor.execute(
         "SELECT SUM(amount) FROM actions WHERE chat_id=? AND from_id=? AND amount>0",
-        (chat_id, user_id)
+        (m.chat.id, m.from_user.id)
     )
-    given_total = cursor.fetchone()[0] or 0
+    given = cursor.fetchone()[0] or 0
 
     cursor.execute(
         "SELECT SUM(amount) FROM actions WHERE chat_id=? AND from_id=? AND amount<0",
-        (chat_id, user_id)
+        (m.chat.id, m.from_user.id)
     )
-    taken_total = abs(cursor.fetchone()[0] or 0)
-
-    if rating >= 300:
-        title = "💎 Легенда чата"
-    elif rating >= 100:
-        title = "🔥 Уважаемый"
-    elif rating <= -100:
-        title = "💀 Опасный"
-    else:
-        title = "🙂 Нейтрал"
+    taken = abs(cursor.fetchone()[0] or 0)
 
     await m.answer(
         f"📊 <b>Твоя статистика</b>\n\n"
-        f"👤 <b>{m.from_user.first_name}</b>\n"
-        f"🏷 <b>Статус:</b> {title}\n\n"
-        f"⭐ <b>Рейтинг:</b> {rating}\n"
-        f"➕ <b>Осталось плюсов:</b> {plus}\n"
-        f"➖ <b>Минус-баланс:</b> {minus}/50\n\n"
-        f"💰 <b>Отдал всего:</b> +{given_total}\n"
-        f"😈 <b>Забрал всего:</b> −{taken_total}",
+        f"👤 {m.from_user.first_name}\n"
+        f"⭐ Рейтинг: {rating}\n"
+        f"🎯 Осталось баллов: {balance}/200\n\n"
+        f"💰 Отдал: +{given}\n"
+        f"😈 Забрал: −{taken}",
         parse_mode="HTML"
     )
 
@@ -205,7 +166,7 @@ async def top(m: types.Message):
         await m.answer("📊 Пока пусто")
         return
 
-    text = "🏆 Рейтинг:\n\n"
+    text = "🏆 <b>Общий рейтинг</b>\n\n"
     for i, (uid, r) in enumerate(rows, 1):
         try:
             member = await bot.get_chat_member(m.chat.id, uid)
@@ -214,7 +175,7 @@ async def top(m: types.Message):
             name = "Пользователь"
         text += f"{i}. {name} — {r}\n"
 
-    await m.answer(text)
+    await m.answer(text, parse_mode="HTML")
 
 @dp.message(Command("rich"))
 async def rich(m: types.Message):
@@ -225,10 +186,17 @@ async def rich(m: types.Message):
         (m.chat.id,)
     )
     rows = cursor.fetchall()
-    text = "💸 Щедрые:\n\n"
-    for i, (_, s) in enumerate(rows, 1):
-        text += f"{i}. +{s}\n"
-    await m.answer(text)
+
+    text = "💸 <b>Самые щедрые</b>\n\n"
+    for i, (uid, s) in enumerate(rows, 1):
+        try:
+            member = await bot.get_chat_member(m.chat.id, uid)
+            name = member.user.first_name
+        except:
+            name = "Пользователь"
+        text += f"{i}. {name} — +{s}\n"
+
+    await m.answer(text or "Нет данных", parse_mode="HTML")
 
 @dp.message(Command("hate"))
 async def hate(m: types.Message):
@@ -239,19 +207,17 @@ async def hate(m: types.Message):
         (m.chat.id,)
     )
     rows = cursor.fetchall()
-    text = "😈 Хейтеры:\n\n"
-    for i, (_, s) in enumerate(rows, 1):
-        text += f"{i}. {abs(s)}\n"
-    await m.answer(text)
 
-@dp.message(Command("stat"))
-async def stat(m: types.Message):
-    cursor.execute(
-        "SELECT COUNT(*), SUM(amount) FROM actions WHERE chat_id=?",
-        (m.chat.id,)
-    )
-    c, s = cursor.fetchone()
-    await m.answer(f"📊 Действий: {c}\n🔢 Сумма: {s or 0}")
+    text = "😈 <b>Хейтеры</b>\n\n"
+    for i, (uid, s) in enumerate(rows, 1):
+        try:
+            member = await bot.get_chat_member(m.chat.id, uid)
+            name = member.user.first_name
+        except:
+            name = "Пользователь"
+        text += f"{i}. {name} — {abs(s)}\n"
+
+    await m.answer(text or "Тишина", parse_mode="HTML")
 
 # ------------------ RATING HANDLER ------------------
 @dp.message()
@@ -270,47 +236,24 @@ async def rating_handler(m: types.Message):
 
     voter = m.from_user
     target = m.reply_to_message.from_user
-    if not target or voter.id == target.id:
+
+    if voter.id == target.id:
         return
 
-    plus, minus, warned = get_balance(m.chat.id, voter.id)
+    balance = get_balance(m.chat.id, voter.id)
 
-    if sign == "+":
-        if plus < amount:
-            await m.reply("💸 Плюсов не хватает")
-            return
+    if balance < amount:
+        await m.reply("❌ Недостаточно баллов.")
+        return
 
-        plus -= amount
-        change_rating(m.chat.id, target.id, amount)
-        log_action(m.chat.id, voter.id, target.id, amount)
+    delta = amount if sign == "+" else -amount
 
-    else:
-        given = total_given(m.chat.id, voter.id, target.id)
-        rollback = min(given, amount)
-
-        if rollback > 0:
-            plus += rollback  # rollback НЕ логируем
-
-        real_minus = amount - rollback
-
-        if real_minus > 0:
-            if minus >= real_minus:
-                minus -= real_minus
-            else:
-                await m.reply("🐍 Сначала дай, потом забирай")
-                return
-            change_rating(m.chat.id, target.id, -real_minus)
-            log_action(m.chat.id, voter.id, target.id, -real_minus)
-
-    if plus < 50 and not warned:
-        await m.reply(random.choice(LOW_PLUS_WARNINGS))
-        warned = 1
-
-    update_balance(m.chat.id, voter.id, plus, minus, warned)
+    update_balance(m.chat.id, voter.id, balance - amount)
+    change_rating(m.chat.id, target.id, delta)
+    log_action(m.chat.id, voter.id, target.id, delta)
 
     cursor.execute(
-        "SELECT SUM(amount) FROM actions "
-        "WHERE chat_id=? AND to_id=? AND ts > ?",
+        "SELECT SUM(amount) FROM actions WHERE chat_id=? AND to_id=? AND ts > ?",
         (m.chat.id, target.id,
          int((datetime.utcnow() - timedelta(days=1)).timestamp()))
     )
@@ -331,3 +274,4 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+
