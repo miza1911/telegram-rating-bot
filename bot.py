@@ -1,13 +1,13 @@
 import os
 import re
-import random
 import sqlite3
 import asyncio
 import logging
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
+from aiogram.types import ChatPermissions
 
 # ------------------ LOGGING ------------------
 logging.basicConfig(level=logging.INFO)
@@ -41,62 +41,25 @@ CREATE TABLE IF NOT EXISTS actions (
     amount INTEGER,
     ts INTEGER
 );
-
-CREATE TABLE IF NOT EXISTS daily_balance (
-    chat_id INTEGER,
-    user_id INTEGER,
-    plus_left INTEGER,
-    date TEXT,
-    PRIMARY KEY (chat_id, user_id)
-);
 """)
 conn.commit()
 
 # ------------------ CONSTANTS ------------------
-DAILY_BALANCE = 200
+MAX_PER_ACTION = 200
 SHAME_LIMIT = -500
+
+# 🚫 Заблокированный пользователь (по username и имени)
+BLOCKED_MINUS_USERNAME = "kuhelklopf"   
+BLOCKED_MINUS_NAME = "Вера Гжель"       
 
 RATING_PATTERN = re.compile(r"([+-])\s*(\d{1,3})")
 
 SHAME_JOKES = [
     "Интернет всё помнит.",
-    "Чат в шоке.",
-    "Это уже диагноз.",
-    "Лучше бы промолчал.",
-    "История запомнит этот день."
+    "Чат в шоке."
 ]
 
-# ------------------ TIME (MOSCOW) ------------------
-MSK = timezone(timedelta(hours=3))
-
-def today():
-    return datetime.now(MSK).strftime("%Y-%m-%d")
-
 # ------------------ HELPERS ------------------
-def get_balance(chat_id, user_id):
-    cursor.execute(
-        "SELECT plus_left, date FROM daily_balance WHERE chat_id=? AND user_id=?",
-        (chat_id, user_id)
-    )
-    row = cursor.fetchone()
-
-    if not row or row[1] != today():
-        cursor.execute(
-            "REPLACE INTO daily_balance VALUES (?, ?, ?, ?)",
-            (chat_id, user_id, DAILY_BALANCE, today())
-        )
-        conn.commit()
-        return DAILY_BALANCE
-
-    return row[0]
-
-def update_balance(chat_id, user_id, plus):
-    cursor.execute(
-        "UPDATE daily_balance SET plus_left=? WHERE chat_id=? AND user_id=?",
-        (plus, chat_id, user_id)
-    )
-    conn.commit()
-
 def change_rating(chat_id, user_id, delta):
     cursor.execute(
         "INSERT INTO ratings VALUES (?, ?, ?) "
@@ -112,19 +75,24 @@ def log_action(chat_id, f, t, amt):
     )
     conn.commit()
 
+async def get_name(chat_id, user_id):
+    try:
+        member = await bot.get_chat_member(chat_id, user_id)
+        return member.user.first_name
+    except:
+        return "Пользователь"
+
 # ------------------ COMMANDS ------------------
 @dp.message(Command("start"))
 async def start(m: types.Message):
     await m.answer(
         "✅ Бот активен\n"
-        "🎯 У каждого 200 баллов в сутки\n"
-        "🔄 Обновление — каждый день в 00:00 по Москве"
+        "➕➖ Меняй рейтинг реплаем: +10, -5\n"
+        f"⚠️ За один раз не больше {MAX_PER_ACTION}"
     )
 
 @dp.message(Command("me"))
 async def me(m: types.Message):
-    balance = get_balance(m.chat.id, m.from_user.id)
-
     cursor.execute(
         "SELECT rating FROM ratings WHERE chat_id=? AND user_id=?",
         (m.chat.id, m.from_user.id)
@@ -147,8 +115,7 @@ async def me(m: types.Message):
     await m.answer(
         f"📊 <b>Твоя статистика</b>\n\n"
         f"👤 {m.from_user.first_name}\n"
-        f"⭐ Рейтинг: {rating}\n"
-        f"🎯 Осталось баллов: {balance}/200\n\n"
+        f"⭐ Рейтинг: {rating}\n\n"
         f"💰 Отдал: +{given}\n"
         f"😈 Забрал: −{taken}",
         parse_mode="HTML"
@@ -168,11 +135,7 @@ async def top(m: types.Message):
 
     text = "🏆 <b>Общий рейтинг</b>\n\n"
     for i, (uid, r) in enumerate(rows, 1):
-        try:
-            member = await bot.get_chat_member(m.chat.id, uid)
-            name = member.user.first_name
-        except:
-            name = "Пользователь"
+        name = await get_name(m.chat.id, uid)
         text += f"{i}. {name} — {r}\n"
 
     await m.answer(text, parse_mode="HTML")
@@ -187,16 +150,16 @@ async def rich(m: types.Message):
     )
     rows = cursor.fetchall()
 
+    if not rows:
+        await m.answer("💸 Пока никто не щедрил")
+        return
+
     text = "💸 <b>Самые щедрые</b>\n\n"
     for i, (uid, s) in enumerate(rows, 1):
-        try:
-            member = await bot.get_chat_member(m.chat.id, uid)
-            name = member.user.first_name
-        except:
-            name = "Пользователь"
+        name = await get_name(m.chat.id, uid)
         text += f"{i}. {name} — +{s}\n"
 
-    await m.answer(text or "Нет данных", parse_mode="HTML")
+    await m.answer(text, parse_mode="HTML")
 
 @dp.message(Command("hate"))
 async def hate(m: types.Message):
@@ -208,16 +171,16 @@ async def hate(m: types.Message):
     )
     rows = cursor.fetchall()
 
+    if not rows:
+        await m.answer("😇 Хейтеров нет")
+        return
+
     text = "😈 <b>Хейтеры</b>\n\n"
     for i, (uid, s) in enumerate(rows, 1):
-        try:
-            member = await bot.get_chat_member(m.chat.id, uid)
-            name = member.user.first_name
-        except:
-            name = "Пользователь"
+        name = await get_name(m.chat.id, uid)
         text += f"{i}. {name} — {abs(s)}\n"
 
-    await m.answer(text or "Тишина", parse_mode="HTML")
+    await m.answer(text, parse_mode="HTML")
 
 # ------------------ RATING HANDLER ------------------
 @dp.message()
@@ -231,40 +194,39 @@ async def rating_handler(m: types.Message):
 
     sign, num = match.groups()
     amount = int(num)
-    if not 1 <= amount <= 100:
+
+    if not 1 <= amount <= MAX_PER_ACTION:
+        await m.reply(f"⚠️ Можно менять не больше {MAX_PER_ACTION} за раз.")
         return
 
     voter = m.from_user
     target = m.reply_to_message.from_user
 
-    if voter.id == target.id:
+    if not target or voter.id == target.id:
         return
 
-    balance = get_balance(m.chat.id, voter.id)
+    # 🚫 ОСОБОЕ ПРАВИЛО ДЛЯ ВЕРЫ
+    if sign == "-" and (
+        voter.username == BLOCKED_MINUS_USERNAME
+        or voter.first_name == BLOCKED_MINUS_NAME
+    ):
+        try:
+            await bot.restrict_chat_member(
+                chat_id=m.chat.id,
+                user_id=voter.id,
+                permissions=ChatPermissions(can_send_messages=False),
+                until_date=datetime.utcnow() + timedelta(hours=1)
+            )
+        except Exception as e:
+            logging.warning(f"Не удалось замьютить: {e}")
 
-    if balance < amount:
-        await m.reply("❌ Недостаточно баллов.")
+        await m.reply("🚫 Минусы тебе запрещены. Мьют на 1 час.")
         return
 
     delta = amount if sign == "+" else -amount
 
-    update_balance(m.chat.id, voter.id, balance - amount)
     change_rating(m.chat.id, target.id, delta)
     log_action(m.chat.id, voter.id, target.id, delta)
-
-    cursor.execute(
-        "SELECT SUM(amount) FROM actions WHERE chat_id=? AND to_id=? AND ts > ?",
-        (m.chat.id, target.id,
-         int((datetime.utcnow() - timedelta(days=1)).timestamp()))
-    )
-    day_sum = cursor.fetchone()[0] or 0
-
-    if day_sum <= SHAME_LIMIT:
-        await m.answer(
-            f"🚨 ПОЗОР ДНЯ 🚨\n"
-            f"{target.first_name} за сутки набрал {day_sum}\n"
-            f"{random.choice(SHAME_JOKES)}"
-        )
 
 # ------------------ RUN ------------------
 async def main():
@@ -274,4 +236,5 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+
 
