@@ -99,7 +99,7 @@ async def me(m: types.Message):
     await m.answer(
         f"📉 <b>Твоя статистика</b>\n\n"
         f"👤 {m.from_user.first_name}\n"
-        f"💀 Минус-рейтинг: {rating}\n"
+        f"💀 Рейтинг: {rating}\n"
         f"🧾 Сколько раз минусовали: {hits}",
         parse_mode="HTML"
     )
@@ -117,7 +117,7 @@ async def top(m: types.Message):
         await m.answer("😇 Пока все чисты")
         return
 
-    text = "🏴‍☠️ <b>Доска позора</b>\n\n"
+    text = "🏴‍☠️ <b>Социальный рейтинг чата носа(2)</b>\n\n"
     for i, (uid, r) in enumerate(rows, 1):
         name = await get_name(m.chat.id, uid)
         text += f"{i}. {name} — {r}\n"
