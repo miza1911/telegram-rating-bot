@@ -92,7 +92,10 @@ async def me(m: types.Message):
     )
     row = cursor.fetchone()
     rating = row[0] if row else 0
-    await m.answer(f"⭐ Рейтинг: {rating}")
+    await m.answer(
+    f"👤 {m.from_user.first_name}\n"
+    f"🏆 Твой рейтинг: {rating}"
+)
 
 @dp.message(Command("top"))
 async def top(m: types.Message):
