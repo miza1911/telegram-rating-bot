@@ -50,6 +50,7 @@ MSK = timezone(timedelta(hours=3))
 LAUGH = {"😂","🤣","😹","😆","😅","😄","😁","😸","😺"}
 HEARTS = {"❤️","🧡","💛","💚","💙","💜","🖤","🤍","🤎","💖","💘","💝","💗","💓","💞","💕","💟"}
 POOP = {"💩","🗑","🤮","👎","😡","😠","😤","🤢"}
+WOW = {"😮","😲","😯"}
 
 REACTION_SCORES = {
     "🔥": 30,
@@ -57,8 +58,6 @@ REACTION_SCORES = {
     "😎": 15,
     "🤡": -20,
 }
-
-WOW = {"😮","😲","😯"}
 
 # текстовые реакции
 ORU = re.compile(r"\bору+\b", re.IGNORECASE)
@@ -103,7 +102,7 @@ async def start(m: types.Message):
         "😈 Бот активен\n\n"
         "😂 реакции дают очки\n"
         "ору / ахахах (реплай) → +50\n"
-        "Самые популярные сообщения попадают в рейтинг"
+        "🔥 популярные сообщения попадают в рейтинг"
     )
 
 @dp.message(Command("me"))
@@ -140,7 +139,7 @@ async def top(m: types.Message):
         prefix = medals[i-1] if i<=3 else f"{i}️⃣"
         text += f"{prefix} {name} — {r} {status_emoji(r)}\n"
 
-    # лидер сообщений
+    # самое обсуждаемое сообщение
     cursor.execute("""
         SELECT message_id, to_id, COUNT(*) as c
         FROM actions
@@ -176,7 +175,7 @@ async def text_reactions(m: types.Message):
         return
 
     target = m.reply_to_message.from_user
-    if not target:
+    if not target or target.id == m.from_user.id:
         return
 
     score = 0
@@ -193,9 +192,17 @@ async def text_reactions(m: types.Message):
 # ------------------ REACTION HANDLER ------------------
 @dp.message_reaction()
 async def reactions(event: types.MessageReactionUpdated):
+    if not event.message:
+        return
+
     chat_id = event.chat.id
-    user_id = event.user.id
-    message_id = event.message_id
+    voter_id = event.user.id
+    target = event.message.from_user
+
+    if not target or target.id == voter_id:
+        return
+
+    message_id = event.message.message_id
 
     for reaction in event.new_reaction:
         emoji = reaction.emoji
@@ -213,16 +220,16 @@ async def reactions(event: types.MessageReactionUpdated):
             score = REACTION_SCORES[emoji]
 
         if score != 0:
-            msg = await bot.get_message(chat_id, message_id)
-            target = msg.from_user
-            if target:
-                change_rating(chat_id, target.id, score)
-                log_action(chat_id, message_id, user_id, target.id, score)
+            change_rating(chat_id, target.id, score)
+            log_action(chat_id, message_id, voter_id, target.id, score)
 
 # ------------------ RUN ------------------
 async def main():
     await bot.delete_webhook(drop_pending_updates=True)
-    await dp.start_polling(bot)
+    await dp.start_polling(
+        bot,
+        allowed_updates=["message", "message_reaction"]
+    )
 
 if __name__ == "__main__":
     asyncio.run(main())
