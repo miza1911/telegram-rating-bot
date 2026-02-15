@@ -12,7 +12,6 @@ from aiogram.filters import Command
 logging.basicConfig(level=logging.INFO)
 logging.info("🚀 rofl-bot started")
 
-# ------------------ TOKEN ------------------
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 if not BOT_TOKEN:
     raise RuntimeError("BOT_TOKEN is not set")
@@ -46,24 +45,24 @@ conn.commit()
 # ------------------ TIME ------------------
 MSK = timezone(timedelta(hours=3))
 
-# ------------------ REACTIONS ------------------
+# ------------------ EMOJI GROUPS ------------------
 LAUGH = {"😂","🤣","😹","😆","😅","😄","😁","😸","😺"}
-HEARTS = {"❤️","🧡","💛","💚","💙","💜","🖤","🤍","🤎","💖","💘","💝","💗","💓","💞","💕","💟"}
-POOP = {"💩","🗑","🤮","👎","😡","😠","😤","🤢"}
+HEARTS = {"❤","❤️","💖","💗","💘","💝","💓","💞","💕","💟","🫶"}
+LIKES = {"👍","👌","👏"}
 WOW = {"😮","😲","😯"}
-
-REACTION_SCORES = {
-    "🔥": 30,
-    "💯": 30,
-    "😎": 15,
-    "🤡": -20,
-}
+NEGATIVE = {"💩","🤮","👎","😡","😠","🤡","🤢"}
 
 # текстовые реакции
 ORU = re.compile(r"\bору+\b", re.IGNORECASE)
 AHAH = re.compile(r"(ах){2,}", re.IGNORECASE)
 
 # ------------------ HELPERS ------------------
+def normalize_emoji(e: str) -> str:
+    modifiers = ["🏻","🏼","🏽","🏾","🏿","️"]
+    for m in modifiers:
+        e = e.replace(m, "")
+    return e
+
 def change_rating(chat_id, user_id, delta):
     cursor.execute(
         "INSERT INTO ratings VALUES (?, ?, ?) "
@@ -101,6 +100,8 @@ async def start(m: types.Message):
     await m.answer(
         "😈 Бот активен\n\n"
         "😂 реакции дают очки\n"
+        "❤️ поддержка = плюс\n"
+        "🤡 негатив = минус\n"
         "ору / ахахах (реплай) → +50\n"
         "🔥 популярные сообщения попадают в рейтинг"
     )
@@ -111,8 +112,8 @@ async def me(m: types.Message):
         "SELECT rating FROM ratings WHERE chat_id=? AND user_id=?",
         (m.chat.id, m.from_user.id)
     )
-    r = cursor.fetchone()
-    rating = r[0] if r else 0
+    row = cursor.fetchone()
+    rating = row[0] if row else 0
 
     await m.answer(
         f"👤 {m.from_user.first_name}\n"
@@ -139,12 +140,13 @@ async def top(m: types.Message):
         prefix = medals[i-1] if i<=3 else f"{i}️⃣"
         text += f"{prefix} {name} — {r} {status_emoji(r)}\n"
 
-    # самое обсуждаемое сообщение
+    # ---------- САМОЕ ОБСУЖДАЕМОЕ СООБЩЕНИЕ ----------
     cursor.execute("""
         SELECT message_id, to_id, COUNT(*) as c
         FROM actions
         WHERE chat_id=?
         GROUP BY message_id
+        HAVING c >= 3
         ORDER BY c DESC
         LIMIT 1
     """,(m.chat.id,))
@@ -161,7 +163,7 @@ async def top(m: types.Message):
                 "\n🔥 Самое обсуждаемое сообщение\n\n"
                 f"👤 {name}\n"
                 f"🕒 {time} (МСК)\n"
-                f"Всего реакций: {count}"
+                f"Реакций: {count}"
             )
         except:
             pass
@@ -192,36 +194,46 @@ async def text_reactions(m: types.Message):
 # ------------------ REACTION HANDLER ------------------
 @dp.message_reaction()
 async def reactions(event: types.MessageReactionUpdated):
+
     if not event.message:
         return
 
     chat_id = event.chat.id
     voter_id = event.user.id
-    target = event.message.from_user
+    message = event.message
 
-    if not target or target.id == voter_id:
+    if not message.from_user:
         return
 
-    message_id = event.message.message_id
+    target_id = message.from_user.id
+    if voter_id == target_id:
+        return
+
+    message_id = message.message_id
 
     for reaction in event.new_reaction:
-        emoji = reaction.emoji
+        emoji = normalize_emoji(reaction.emoji)
+
         score = 0
 
         if emoji in LAUGH:
             score = 40
         elif emoji in HEARTS:
             score = 10
+        elif emoji in LIKES:
+            score = 15
         elif emoji in WOW:
             score = 20
-        elif emoji in POOP:
+        elif emoji == "🔥":
+            score = 30
+        elif emoji == "💯":
+            score = 30
+        elif emoji in NEGATIVE:
             score = -30
-        elif emoji in REACTION_SCORES:
-            score = REACTION_SCORES[emoji]
 
         if score != 0:
-            change_rating(chat_id, target.id, score)
-            log_action(chat_id, message_id, voter_id, target.id, score)
+            change_rating(chat_id, target_id, score)
+            log_action(chat_id, message_id, voter_id, target_id, score)
 
 # ------------------ RUN ------------------
 async def main():
