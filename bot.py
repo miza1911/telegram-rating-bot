@@ -164,6 +164,7 @@ async def text_reactions(m: types.Message):
 # ------------------ REACTIONS ------------------
 @dp.message_reaction()
 async def reactions(event: types.MessageReactionUpdated):
+    logging.info("🔥 reaction update received")
 
     if not event.user:
         return
@@ -172,16 +173,12 @@ async def reactions(event: types.MessageReactionUpdated):
     voter_id = event.user.id
     message_id = event.message_id
 
-    # получаем автора сообщения
     try:
-        msg = await bot.forward_message(chat_id, chat_id, message_id)
-    except:
+        msg = await bot.get_message(chat_id, message_id)
+        target_id = msg.from_user.id
+    except Exception as e:
+        logging.warning(f"Cannot fetch message: {e}")
         return
-
-    if not msg.forward_from:
-        return
-
-    target_id = msg.forward_from.id
 
     if voter_id == target_id:
         return
@@ -190,7 +187,6 @@ async def reactions(event: types.MessageReactionUpdated):
         emoji = normalize_emoji(reaction.emoji)
 
         score = 0
-
         if emoji in LAUGH:
             score = 40
         elif emoji in HEARTS:
@@ -211,11 +207,17 @@ async def reactions(event: types.MessageReactionUpdated):
 # ------------------ RUN ------------------
 async def main():
     await bot.delete_webhook(drop_pending_updates=True)
+
     await dp.start_polling(
         bot,
-        allowed_updates=["message", "message_reaction"]
+        allowed_updates=[
+            "message",
+            "message_reaction",
+            "message_reaction_count"
+        ]
     )
 
 if __name__ == "__main__":
     asyncio.run(main())
+
 
