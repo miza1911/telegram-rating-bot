@@ -73,13 +73,29 @@ async def debug_updates(update: types.Update):
 async def reactions(event: types.MessageReactionUpdated):
     logging.info("🔥 reaction received")
 
-    if not event.user or not event.message:
+    if not event.user:
         return
 
-    voter_id = event.user.id
-    target_id = event.message.from_user.id
     chat_id = event.chat.id
+    voter_id = event.user.id
     message_id = event.message_id
+
+    # получаем сообщение через forward (самый стабильный способ)
+    try:
+        msg = await bot.forward_message(
+            chat_id=chat_id,
+            from_chat_id=chat_id,
+            message_id=message_id
+        )
+    except Exception as e:
+        logging.info(f"forward error: {e}")
+        return
+
+    if not msg.forward_from:
+        logging.info("no author")
+        return
+
+    target_id = msg.forward_from.id
 
     if voter_id == target_id:
         return
@@ -88,7 +104,6 @@ async def reactions(event: types.MessageReactionUpdated):
         emoji = r.emoji
 
         score = 0
-
         if emoji in LAUGH:
             score = 40
         elif emoji in HEARTS:
@@ -103,6 +118,7 @@ async def reactions(event: types.MessageReactionUpdated):
         if score:
             change_rating(chat_id, target_id, score)
             logging.info(f"+{score} added")
+
 
 # ---------------- RUN ----------------
 async def main():
