@@ -109,27 +109,13 @@ async def reactions(event: types.MessageReactionUpdated):
 
     chat_id = event.chat.id
     voter_id = event.user.id
-    message_id = event.message_id
 
-    # получаем автора сообщения
-    try:
-        forwarded = await bot.forward_message(
-            chat_id=chat_id,
-            from_chat_id=chat_id,
-            message_id=message_id
-        )
-    except Exception as e:
-        logging.info(f"forward error: {e}")
+    # actor = автор сообщения
+    if not event.actor:
+        logging.info("no actor")
         return
 
-    if not forwarded.forward_from:
-        await bot.delete_message(chat_id, forwarded.message_id)
-        return
-
-    target_id = forwarded.forward_from.id
-
-    # удаляем пересланное сообщение
-    await bot.delete_message(chat_id, forwarded.message_id)
+    target_id = event.actor.id
 
     if voter_id == target_id:
         return
@@ -152,6 +138,7 @@ async def reactions(event: types.MessageReactionUpdated):
         if score:
             change_rating(chat_id, target_id, score)
             logging.info(f"+{score} added")
+
 
 # ---------------- RUN ----------------
 async def main():
