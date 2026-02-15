@@ -3,7 +3,7 @@ import re
 import sqlite3
 import asyncio
 import logging
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
@@ -17,7 +17,6 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 if not BOT_TOKEN:
     raise RuntimeError("BOT_TOKEN is not set")
 
-# ------------------ BOT ------------------
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
@@ -35,6 +34,7 @@ CREATE TABLE IF NOT EXISTS ratings (
 
 CREATE TABLE IF NOT EXISTS actions (
     chat_id INTEGER,
+    message_id INTEGER,
     from_id INTEGER,
     to_id INTEGER,
     amount INTEGER,
@@ -43,9 +43,26 @@ CREATE TABLE IF NOT EXISTS actions (
 """)
 conn.commit()
 
-# ------------------ CONSTANTS ------------------
-MAX_PER_ACTION = 200
-MINUS_PATTERN = re.compile(r"-\s*(\d{1,3})")
+# ------------------ TIME ------------------
+MSK = timezone(timedelta(hours=3))
+
+# ------------------ REACTIONS ------------------
+LAUGH = {"😂","🤣","😹","😆","😅","😄","😁","😸","😺"}
+HEARTS = {"❤️","🧡","💛","💚","💙","💜","🖤","🤍","🤎","💖","💘","💝","💗","💓","💞","💕","💟"}
+POOP = {"💩","🗑","🤮","👎","😡","😠","😤","🤢"}
+
+REACTION_SCORES = {
+    "🔥": 30,
+    "💯": 30,
+    "😎": 15,
+    "🤡": -20,
+}
+
+WOW = {"😮","😲","😯"}
+
+# текстовые реакции
+ORU = re.compile(r"\bору+\b", re.IGNORECASE)
+AHAH = re.compile(r"(ах){2,}", re.IGNORECASE)
 
 # ------------------ HELPERS ------------------
 def change_rating(chat_id, user_id, delta):
@@ -56,10 +73,10 @@ def change_rating(chat_id, user_id, delta):
     )
     conn.commit()
 
-def log_action(chat_id, f, t, amt):
+def log_action(chat_id, message_id, f, t, amt):
     cursor.execute(
-        "INSERT INTO actions VALUES (?, ?, ?, ?, ?)",
-        (chat_id, f, t, amt, int(datetime.utcnow().timestamp()))
+        "INSERT INTO actions VALUES (?, ?, ?, ?, ?, ?)",
+        (chat_id, message_id, f, t, amt, int(datetime.utcnow().timestamp()))
     )
     conn.commit()
 
@@ -70,15 +87,23 @@ async def get_name(chat_id, user_id):
     except:
         return "Пользователь"
 
+def status_emoji(score):
+    if score >= 1000: return "🔥"
+    if score >= 300: return "😎"
+    if score >= 0: return "🙂"
+    if score <= -500: return "☠️"
+    if score <= -300: return "💀"
+    if score <= -100: return "🤡"
+    return ""
+
 # ------------------ COMMANDS ------------------
 @dp.message(Command("start"))
 async def start(m: types.Message):
     await m.answer(
-        "😈 БОТ АКТИВЕН\n\n"
-        "— считаются ТОЛЬКО минусы\n"
-        "— плюсы игнорируются\n"
-        "— минус ставится ТОЛЬКО реплаем\n\n"
-        "Пример:  ахаха -10"
+        "😈 Рофл-бот активен\n\n"
+        "😂 реакции дают очки\n"
+        "ору / ахахах (реплай) → +50\n"
+        "Самые популярные сообщения попадают в рейтинг"
     )
 
 @dp.message(Command("me"))
@@ -87,72 +112,116 @@ async def me(m: types.Message):
         "SELECT rating FROM ratings WHERE chat_id=? AND user_id=?",
         (m.chat.id, m.from_user.id)
     )
-    row = cursor.fetchone()
-    rating = row[0] if row else 0
-
-    cursor.execute(
-        "SELECT COUNT(*) FROM actions WHERE chat_id=? AND to_id=?",
-        (m.chat.id, m.from_user.id)
-    )
-    hits = cursor.fetchone()[0]
+    r = cursor.fetchone()
+    rating = r[0] if r else 0
 
     await m.answer(
-        f"📉 <b>Твоя статистика</b>\n\n"
         f"👤 {m.from_user.first_name}\n"
-        f"💀 Рейтинг: {rating}\n"
-        f"🧾 Сколько раз минусовали: {hits}",
-        parse_mode="HTML"
+        f"⭐ Рейтинг: {rating} {status_emoji(rating)}"
     )
 
 @dp.message(Command("top"))
 async def top(m: types.Message):
     cursor.execute(
-        "SELECT user_id, rating FROM ratings "
-        "WHERE chat_id=? ORDER BY rating ASC",
+        "SELECT user_id, rating FROM ratings WHERE chat_id=? ORDER BY rating DESC LIMIT 10",
         (m.chat.id,)
     )
     rows = cursor.fetchall()
 
     if not rows:
-        await m.answer("😇 Пока все чисты")
+        await m.answer("Пока пусто")
         return
 
-    text = "🏴‍☠️ <b>Социальный рейтинг чата носа(2)</b>\n\n"
-    for i, (uid, r) in enumerate(rows, 1):
+    medals = ["🥇","🥈","🥉"]
+    text = "🏆 Рейтинг чата\n\n"
+
+    for i,(uid,r) in enumerate(rows,1):
         name = await get_name(m.chat.id, uid)
-        text += f"{i}. {name} — {r}\n"
+        prefix = medals[i-1] if i<=3 else f"{i}️⃣"
+        text += f"{prefix} {name} — {r} {status_emoji(r)}\n"
 
-    await m.answer(text, parse_mode="HTML")
+    # лидер сообщений
+    cursor.execute("""
+        SELECT message_id, to_id, COUNT(*) as c
+        FROM actions
+        WHERE chat_id=?
+        GROUP BY message_id
+        ORDER BY c DESC
+        LIMIT 1
+    """,(m.chat.id,))
+    best = cursor.fetchone()
 
-# ------------------ RATING HANDLER ------------------
+    if best:
+        msg_id, uid, count = best
+        try:
+            msg = await bot.forward_message(m.chat.id, m.chat.id, msg_id)
+            name = await get_name(m.chat.id, uid)
+            time = datetime.fromtimestamp(msg.date.timestamp(), MSK).strftime("%H:%M")
+
+            text += (
+                "\n🔥 Самое обсуждаемое сообщение\n\n"
+                f"👤 {name}\n"
+                f"🕒 {time} (МСК)\n"
+                f"Всего реакций: {count}"
+            )
+        except:
+            pass
+
+    await m.answer(text)
+
+# ------------------ TEXT REACTIONS ------------------
 @dp.message()
-async def rating_handler(m: types.Message):
+async def text_reactions(m: types.Message):
     if not m.reply_to_message or not m.text:
         return
 
-    match = MINUS_PATTERN.search(m.text)
-    if not match:
-        return  # плюсы и всё остальное игнорируем
-
-    amount = int(match.group(1))
-    if not 1 <= amount <= MAX_PER_ACTION:
-        return
-
-    voter = m.from_user
     target = m.reply_to_message.from_user
-
-    if not target or voter.id == target.id:
+    if not target:
         return
 
-    delta = -amount
+    score = 0
 
-    change_rating(m.chat.id, target.id, delta)
-    log_action(m.chat.id, voter.id, target.id, delta)
+    if ORU.search(m.text):
+        score += 50
+    if AHAH.search(m.text):
+        score += 50
+
+    if score:
+        change_rating(m.chat.id, target.id, score)
+        log_action(m.chat.id, m.reply_to_message.message_id, m.from_user.id, target.id, score)
+
+# ------------------ REACTION HANDLER ------------------
+@dp.message_reaction()
+async def reactions(event: types.MessageReactionUpdated):
+    chat_id = event.chat.id
+    user_id = event.user.id
+    message_id = event.message_id
+
+    for reaction in event.new_reaction:
+        emoji = reaction.emoji
+        score = 0
+
+        if emoji in LAUGH:
+            score = 40
+        elif emoji in HEARTS:
+            score = 10
+        elif emoji in WOW:
+            score = 20
+        elif emoji in POOP:
+            score = -30
+        elif emoji in REACTION_SCORES:
+            score = REACTION_SCORES[emoji]
+
+        if score != 0:
+            msg = await bot.get_message(chat_id, message_id)
+            target = msg.from_user
+            if target:
+                change_rating(chat_id, target.id, score)
+                log_action(chat_id, message_id, user_id, target.id, score)
 
 # ------------------ RUN ------------------
 async def main():
     await bot.delete_webhook(drop_pending_updates=True)
-    logging.info("🤖 polling started")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
