@@ -20,7 +20,7 @@ bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
 # ------------------ DATABASE ------------------
-conn = sqlite3.connect("ratings.db")
+conn = sqlite3.connect("ratings.db", check_same_thread=False)
 cursor = conn.cursor()
 
 cursor.executescript("""
@@ -52,9 +52,8 @@ LIKES = {"👍","👌","👏"}
 WOW = {"😮","😲","😯"}
 NEGATIVE = {"💩","🤮","👎","😡","😠","🤡","🤢"}
 
-# текстовые реакции
-ORU = re.compile(r"\bору+\b", re.IGNORECASE)
-AHAH = re.compile(r"(ах){2,}", re.IGNORECASE)
+ORU = re.compile(r"ору+", re.IGNORECASE)
+AHAH = re.compile(r"(ах)+", re.IGNORECASE)
 
 # ------------------ HELPERS ------------------
 def normalize_emoji(e: str) -> str:
@@ -87,11 +86,11 @@ async def get_name(chat_id, user_id):
 
 def status_emoji(score):
     if score >= 1000: return "🔥"
-    if score >= 300: return "😎"
-    if score >= 0: return "🙂"
-    if score <= -500: return "☠️"
-    if score <= -300: return "💀"
-    if score <= -100: return "🤡"
+    elif score >= 300: return "😎"
+    elif score >= 0: return "🙂"
+    elif score <= -500: return "☠️"
+    elif score <= -300: return "💀"
+    elif score <= -100: return "🤡"
     return ""
 
 # ------------------ COMMANDS ------------------
@@ -102,8 +101,7 @@ async def start(m: types.Message):
         "😂 реакции дают очки\n"
         "❤️ поддержка = плюс\n"
         "🤡 негатив = минус\n"
-        "ору / ахахах (реплай) → +50\n"
-        "🔥 популярные сообщения попадают в рейтинг"
+        "ору / ахахах (реплай) → +50"
     )
 
 @dp.message(Command("me"))
@@ -133,40 +131,12 @@ async def top(m: types.Message):
         return
 
     medals = ["🥇","🥈","🥉"]
-    text = "🏆 Рейтинг чата НОСА(2)\n\n"
+    text = "🏆 Рейтинг чата\n\n"
 
     for i,(uid,r) in enumerate(rows,1):
         name = await get_name(m.chat.id, uid)
         prefix = medals[i-1] if i<=3 else f"{i}️⃣"
         text += f"{prefix} {name} — {r} {status_emoji(r)}\n"
-
-    # ---------- САМОЕ ОБСУЖДАЕМОЕ СООБЩЕНИЕ ----------
-    cursor.execute("""
-        SELECT message_id, to_id, COUNT(*) as c
-        FROM actions
-        WHERE chat_id=?
-        GROUP BY message_id
-        HAVING c >= 3
-        ORDER BY c DESC
-        LIMIT 1
-    """,(m.chat.id,))
-    best = cursor.fetchone()
-
-    if best:
-        msg_id, uid, count = best
-        try:
-            msg = await bot.forward_message(m.chat.id, m.chat.id, msg_id)
-            name = await get_name(m.chat.id, uid)
-            time = datetime.fromtimestamp(msg.date.timestamp(), MSK).strftime("%H:%M")
-
-            text += (
-                "\n🔥 Самое обсуждаемое сообщение\n\n"
-                f"👤 {name}\n"
-                f"🕒 {time} (МСК)\n"
-                f"Реакций: {count}"
-            )
-        except:
-            pass
 
     await m.answer(text)
 
@@ -191,42 +161,52 @@ async def text_reactions(m: types.Message):
         change_rating(m.chat.id, target.id, score)
         log_action(m.chat.id, m.reply_to_message.message_id, m.from_user.id, target.id, score)
 
-# ------------------ REACTION HANDLER ------------------
+# ------------------ REACTIONS ------------------
 @dp.message_reaction()
 async def reactions(event: types.MessageReactionUpdated):
 
-    chat_id = event.chat.id
-    message_id = event.message_id
-    voter_id = event.user.id
+    if not event.user:
+        return
 
+    chat_id = event.chat.id
+    voter_id = event.user.id
+    message_id = event.message_id
+
+    # получаем автора сообщения
     try:
-        msg = await bot.get_message(chat_id, message_id)
+        msg = await bot.forward_message(chat_id, chat_id, message_id)
     except:
         return
 
-    target = msg.from_user
-    if not target or target.id == voter_id:
+    if not msg.forward_from:
+        return
+
+    target_id = msg.forward_from.id
+
+    if voter_id == target_id:
         return
 
     for reaction in event.new_reaction:
-        emoji = reaction.emoji
+        emoji = normalize_emoji(reaction.emoji)
+
         score = 0
 
         if emoji in LAUGH:
             score = 40
         elif emoji in HEARTS:
             score = 10
+        elif emoji in LIKES:
+            score = 15
         elif emoji in WOW:
             score = 20
-        elif emoji in POOP:
+        elif emoji in {"🔥","💯"}:
+            score = 30
+        elif emoji in NEGATIVE:
             score = -30
-        elif emoji in REACTION_SCORES:
-            score = REACTION_SCORES[emoji]
 
-        if score != 0:
-            change_rating(chat_id, target.id, score)
-            log_action(chat_id, message_id, voter_id, target.id, score)
-
+        if score:
+            change_rating(chat_id, target_id, score)
+            log_action(chat_id, message_id, voter_id, target_id, score)
 
 # ------------------ RUN ------------------
 async def main():
@@ -238,3 +218,4 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+
