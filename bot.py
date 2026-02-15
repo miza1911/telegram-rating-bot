@@ -1,5 +1,4 @@
 import os
-import re
 import sqlite3
 import asyncio
 import logging
@@ -38,6 +37,7 @@ LIKES = {"👍","👌","👏"}
 WOW = {"😮","😲","😯"}
 NEGATIVE = {"💩","🤮","👎","😡","😠","🤡","🤢"}
 
+# ---------------- HELPERS ----------------
 def change_rating(chat_id, user_id, delta):
     cursor.execute(
         "INSERT INTO ratings VALUES (?, ?, ?) "
@@ -46,7 +46,18 @@ def change_rating(chat_id, user_id, delta):
     )
     conn.commit()
 
+def status_emoji(score):
+    if score >= 300: return "😎"
+    elif score >= 0: return "🙂"
+    elif score <= -300: return "💀"
+    elif score <= -100: return "🤡"
+    return ""
+
 # ---------------- COMMANDS ----------------
+@dp.message(Command("start"))
+async def start(m: types.Message):
+    await m.answer("Бот работает 😈")
+
 @dp.message(Command("me"))
 async def me(m: types.Message):
     cursor.execute(
@@ -61,13 +72,6 @@ async def me(m: types.Message):
         f"⭐ Рейтинг: {rating} {status_emoji(rating)}"
     )
 
-
-# ---------------- DEBUG: ВСЕ ОБНОВЛЕНИЯ ----------------
-@dp.update()
-async def debug_updates(update: types.Update):
-    if update.message_reaction:
-        logging.info("🔥 REACTION UPDATE ARRIVED")
-
 # ---------------- REACTIONS ----------------
 @dp.message_reaction()
 async def reactions(event: types.MessageReactionUpdated):
@@ -80,9 +84,9 @@ async def reactions(event: types.MessageReactionUpdated):
     voter_id = event.user.id
     message_id = event.message_id
 
-    # получаем сообщение через forward (самый стабильный способ)
+    # получаем автора сообщения
     try:
-        msg = await bot.forward_message(
+        forwarded = await bot.forward_message(
             chat_id=chat_id,
             from_chat_id=chat_id,
             message_id=message_id
@@ -91,11 +95,11 @@ async def reactions(event: types.MessageReactionUpdated):
         logging.info(f"forward error: {e}")
         return
 
-    if not msg.forward_from:
+    if not forwarded.forward_from:
         logging.info("no author")
         return
 
-    target_id = msg.forward_from.id
+    target_id = forwarded.forward_from.id
 
     if voter_id == target_id:
         return
@@ -119,13 +123,10 @@ async def reactions(event: types.MessageReactionUpdated):
             change_rating(chat_id, target_id, score)
             logging.info(f"+{score} added")
 
-
 # ---------------- RUN ----------------
 async def main():
     await bot.delete_webhook(drop_pending_updates=True)
-
-    # ВКЛЮЧАЕМ ВСЕ ОБНОВЛЕНИЯ
-    await dp.start_polling(bot, allowed_updates=None)
+    await dp.start_polling(bot)
 
 if __name__ == "__main__":
     asyncio.run(main())
