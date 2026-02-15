@@ -55,7 +55,12 @@ async def me(m: types.Message):
     )
     row = cursor.fetchone()
     rating = row[0] if row else 0
-    await m.answer(f"⭐ {rating}")
+
+    await m.answer(
+        f"👤 {m.from_user.first_name}\n"
+        f"⭐ Рейтинг: {rating} {status_emoji(rating)}"
+    )
+
 
 # ---------------- DEBUG: ВСЕ ОБНОВЛЕНИЯ ----------------
 @dp.update()
@@ -66,36 +71,24 @@ async def debug_updates(update: types.Update):
 # ---------------- REACTIONS ----------------
 @dp.message_reaction()
 async def reactions(event: types.MessageReactionUpdated):
+    logging.info("🔥 reaction received")
 
-    logging.info("🔥 HANDLER TRIGGERED")
-
-    if not event.user:
+    if not event.user or not event.message:
         return
 
-    chat_id = event.chat.id
     voter_id = event.user.id
+    target_id = event.message.from_user.id
+    chat_id = event.chat.id
     message_id = event.message_id
 
-    # получаем сообщение через API
-    try:
-        msg = await bot.get_message(chat_id, message_id)
-    except Exception as e:
-        logging.info(f"cannot fetch message: {e}")
-        return
-
-    if not msg.from_user:
-        logging.info("no author")
-        return
-
-    target_id = msg.from_user.id
-
-    if target_id == voter_id:
+    if voter_id == target_id:
         return
 
     for r in event.new_reaction:
         emoji = r.emoji
 
         score = 0
+
         if emoji in LAUGH:
             score = 40
         elif emoji in HEARTS:
