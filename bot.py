@@ -58,6 +58,20 @@ def status_emoji(score):
 async def start(m: types.Message):
     await m.answer("Бот работает 😈")
 
+@dp.message(Command("me"))
+async def me(m: types.Message):
+    cursor.execute(
+        "SELECT rating FROM ratings WHERE chat_id=? AND user_id=?",
+        (m.chat.id, m.from_user.id)
+    )
+    row = cursor.fetchone()
+    rating = row[0] if row else 0
+
+    await m.answer(
+        f"👤 {m.from_user.first_name}\n"
+        f"⭐ Рейтинг: {rating} {status_emoji(rating)}"
+    )
+
 @dp.message(Command("top"))
 async def top(m: types.Message):
     cursor.execute(
@@ -84,19 +98,6 @@ async def top(m: types.Message):
         text += f"{prefix} {name} — {rating}\n"
 
     await m.answer(text)
-@dp.message(Command("me"))
-async def me(m: types.Message):
-    cursor.execute(
-        "SELECT rating FROM ratings WHERE chat_id=? AND user_id=?",
-        (m.chat.id, m.from_user.id)
-    )
-    row = cursor.fetchone()
-    rating = row[0] if row else 0
-
-    await m.answer(
-        f"👤 {m.from_user.first_name}\n"
-        f"⭐ Рейтинг: {rating} {status_emoji(rating)}"
-    )
 
 # ---------------- REACTIONS ----------------
 @dp.message_reaction()
@@ -122,10 +123,13 @@ async def reactions(event: types.MessageReactionUpdated):
         return
 
     if not forwarded.forward_from:
-        logging.info("no author")
+        await bot.delete_message(chat_id, forwarded.message_id)
         return
 
     target_id = forwarded.forward_from.id
+
+    # удаляем пересланное сообщение
+    await bot.delete_message(chat_id, forwarded.message_id)
 
     if voter_id == target_id:
         return
