@@ -74,7 +74,15 @@ def log_action(chat_id, message_id, f, t, amt):
 # ---------------- COMMANDS ----------------
 @dp.message(Command("start"))
 async def start(m: types.Message):
-    await m.answer("Бот работает 😈")
+    await m.answer(
+        "😈 Бот активен\n\n"
+        "😂 = +40\n"
+        "❤️ = +10\n"
+        "👍 = +15\n"
+        "😮 = +20\n"
+        "🤡 = -30\n"
+        "ору / ахах (реплай) = +50"
+    )
 
 @dp.message(Command("me"))
 async def me(m: types.Message):
@@ -85,6 +93,33 @@ async def me(m: types.Message):
     row = cursor.fetchone()
     rating = row[0] if row else 0
     await m.answer(f"⭐ Рейтинг: {rating}")
+
+@dp.message(Command("top"))
+async def top(m: types.Message):
+    cursor.execute(
+        "SELECT user_id, rating FROM ratings WHERE chat_id=? ORDER BY rating DESC LIMIT 10",
+        (m.chat.id,)
+    )
+    rows = cursor.fetchall()
+
+    if not rows:
+        await m.answer("Пока пусто")
+        return
+
+    text = "🏆 Топ чата:\n\n"
+    medals = ["🥇","🥈","🥉"]
+
+    for i,(uid,r) in enumerate(rows,1):
+        try:
+            member = await bot.get_chat_member(m.chat.id, uid)
+            name = member.user.first_name
+        except:
+            name = "user"
+
+        prefix = medals[i-1] if i<=3 else f"{i}."
+        text += f"{prefix} {name} — {r}\n"
+
+    await m.answer(text)
 
 # ---------------- TEXT REACTIONS ----------------
 @dp.message()
@@ -97,7 +132,6 @@ async def text_reactions(m: types.Message):
         return
 
     score = 0
-
     if ORU.search(m.text):
         score += 50
     if AHAH.search(m.text):
@@ -119,18 +153,21 @@ async def reactions(event: types.MessageReactionUpdated):
     voter_id = event.user.id
     message_id = event.message_id
 
-    # получаем автора сообщения
+    # стабильное получение автора сообщения
     try:
-        msg = await bot.get_message(chat_id, message_id)
+        forwarded = await bot.forward_message(
+            chat_id=chat_id,
+            from_chat_id=chat_id,
+            message_id=message_id
+        )
     except:
         return
 
-    if not msg.from_user:
+    if not forwarded.forward_from:
         return
 
-    target_id = msg.from_user.id
+    target_id = forwarded.forward_from.id
 
-    # запрет голосовать за себя
     if voter_id == target_id:
         return
 
@@ -157,7 +194,7 @@ async def reactions(event: types.MessageReactionUpdated):
 async def main():
     await bot.delete_webhook(drop_pending_updates=True)
 
-    # ВАЖНО: allowed_updates=None чтобы реакции приходили стабильно
+    # allowed_updates=None — критично для реакций
     await dp.start_polling(bot, allowed_updates=None)
 
 if __name__ == "__main__":
