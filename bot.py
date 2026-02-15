@@ -58,6 +58,32 @@ def status_emoji(score):
 async def start(m: types.Message):
     await m.answer("Бот работает 😈")
 
+@dp.message(Command("top"))
+async def top(m: types.Message):
+    cursor.execute(
+        "SELECT user_id, rating FROM ratings WHERE chat_id=? ORDER BY rating DESC LIMIT 10",
+        (m.chat.id,)
+    )
+    rows = cursor.fetchall()
+
+    if not rows:
+        await m.answer("Пока пусто")
+        return
+
+    text = "🏆 Топ чата:\n\n"
+    medals = ["🥇","🥈","🥉"]
+
+    for i, (uid, rating) in enumerate(rows, 1):
+        try:
+            member = await bot.get_chat_member(m.chat.id, uid)
+            name = member.user.first_name
+        except:
+            name = "user"
+
+        prefix = medals[i-1] if i <= 3 else f"{i}."
+        text += f"{prefix} {name} — {rating}\n"
+
+    await m.answer(text)
 @dp.message(Command("me"))
 async def me(m: types.Message):
     cursor.execute(
