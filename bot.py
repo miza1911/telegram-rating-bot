@@ -100,7 +100,7 @@ def status_emoji(score):
 @dp.message(Command("start"))
 async def start(m: types.Message):
     await m.answer(
-        "😈 Рофл-бот активен\n\n"
+        "😈 Бот активен\n\n"
         "😂 реакции дают очки\n"
         "ору / ахахах (реплай) → +50\n"
         "Самые популярные сообщения попадают в рейтинг"
@@ -133,7 +133,7 @@ async def top(m: types.Message):
         return
 
     medals = ["🥇","🥈","🥉"]
-    text = "🏆 Рейтинг чата\n\n"
+    text = "🏆 Рейтинг чата НОСА(2)\n\n"
 
     for i,(uid,r) in enumerate(rows,1):
         name = await get_name(m.chat.id, uid)
