@@ -195,45 +195,38 @@ async def text_reactions(m: types.Message):
 @dp.message_reaction()
 async def reactions(event: types.MessageReactionUpdated):
 
-    if not event.message:
-        return
-
     chat_id = event.chat.id
+    message_id = event.message_id
     voter_id = event.user.id
-    message = event.message
 
-    if not message.from_user:
+    try:
+        msg = await bot.get_message(chat_id, message_id)
+    except:
         return
 
-    target_id = message.from_user.id
-    if voter_id == target_id:
+    target = msg.from_user
+    if not target or target.id == voter_id:
         return
-
-    message_id = message.message_id
 
     for reaction in event.new_reaction:
-        emoji = normalize_emoji(reaction.emoji)
-
+        emoji = reaction.emoji
         score = 0
 
         if emoji in LAUGH:
             score = 40
         elif emoji in HEARTS:
             score = 10
-        elif emoji in LIKES:
-            score = 15
         elif emoji in WOW:
             score = 20
-        elif emoji == "🔥":
-            score = 30
-        elif emoji == "💯":
-            score = 30
-        elif emoji in NEGATIVE:
+        elif emoji in POOP:
             score = -30
+        elif emoji in REACTION_SCORES:
+            score = REACTION_SCORES[emoji]
 
         if score != 0:
-            change_rating(chat_id, target_id, score)
-            log_action(chat_id, message_id, voter_id, target_id, score)
+            change_rating(chat_id, target.id, score)
+            log_action(chat_id, message_id, voter_id, target.id, score)
+
 
 # ------------------ RUN ------------------
 async def main():
