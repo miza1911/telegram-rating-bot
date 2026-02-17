@@ -1,8 +1,9 @@
 import os
+import re
 import sqlite3
 import asyncio
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
@@ -27,15 +28,19 @@ CREATE TABLE IF NOT EXISTS ratings (
     rating INTEGER,
     PRIMARY KEY (chat_id, user_id)
 );
+
+CREATE TABLE IF NOT EXISTS actions (
+    chat_id INTEGER,
+    user_id INTEGER,
+    amount INTEGER,
+    ts INTEGER
+);
 """)
 conn.commit()
 
-# ---------------- EMOJI ----------------
-LAUGH = {"😂","🤣","😹","😆","😅","😄","😁"}
-HEARTS = {"❤","❤️","💖","💗","💘","💝","💕"}
-LIKES = {"👍","👌","👏"}
-WOW = {"😮","😲","😯"}
-NEGATIVE = {"💩","🤮","👎","😡","😠","🤡","🤢"}
+# ---------------- REGEX ----------------
+LAUGH_REGEX = re.compile(r"(ору+)|(ах)+", re.IGNORECASE)
+PLUS_REGEX = re.compile(r"\+\s*(\d*)")
 
 # ---------------- HELPERS ----------------
 def change_rating(chat_id, user_id, delta):
@@ -44,19 +49,24 @@ def change_rating(chat_id, user_id, delta):
         "ON CONFLICT(chat_id, user_id) DO UPDATE SET rating = rating + ?",
         (chat_id, user_id, delta, delta)
     )
+
+    cursor.execute(
+        "INSERT INTO actions VALUES (?, ?, ?, ?)",
+        (chat_id, user_id, delta, int(datetime.utcnow().timestamp()))
+    )
+
     conn.commit()
 
-def status_emoji(score):
-    if score >= 300: return "😎"
-    elif score >= 0: return "🙂"
-    elif score <= -300: return "💀"
-    elif score <= -100: return "🤡"
-    return ""
+def get_name(chat_id, uid):
+    try:
+        return uid
+    except:
+        return "user"
 
 # ---------------- COMMANDS ----------------
 @dp.message(Command("start"))
 async def start(m: types.Message):
-    await m.answer("Бот работает 😈")
+    await m.answer("Социальный рейтинг активен 😈")
 
 @dp.message(Command("me"))
 async def me(m: types.Message):
@@ -67,27 +77,69 @@ async def me(m: types.Message):
     row = cursor.fetchone()
     rating = row[0] if row else 0
 
-    await m.answer(
-        f"👤 {m.from_user.first_name}\n"
-        f"⭐ Рейтинг: {rating} {status_emoji(rating)}"
-    )
+    await m.answer(f"⭐ Твой рейтинг: {rating}")
 
+# ---------------- REPLY RATING ----------------
+@dp.message()
+async def reply_rating(m: types.Message):
+
+    if not m.reply_to_message or not m.text:
+        return
+
+    author = m.reply_to_message.from_user
+    voter = m.from_user
+
+    if not author or author.id == voter.id:
+        return
+
+    text = m.text.lower()
+    score = 0
+
+    # ищем +баллы
+    matches = PLUS_REGEX.findall(text)
+    for match in matches:
+        score += int(match) if match else 1
+
+    # смех
+    if LAUGH_REGEX.search(text):
+        score += 50
+
+    # максимум за сообщение
+    if score > 100:
+        score = 100
+
+    if score <= 0:
+        return
+
+    change_rating(m.chat.id, author.id, score)
+    logging.info(f"{voter.id} gave +{score} to {author.id}")
+
+# ---------------- TOP DAY ----------------
 @dp.message(Command("top"))
-async def top(m: types.Message):
-    cursor.execute(
-        "SELECT user_id, rating FROM ratings WHERE chat_id=? ORDER BY rating DESC LIMIT 10",
-        (m.chat.id,)
-    )
+async def top_today(m: types.Message):
+
+    start = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
+    ts = int(start.timestamp())
+
+    cursor.execute("""
+        SELECT user_id, SUM(amount)
+        FROM actions
+        WHERE chat_id=? AND ts>=?
+        GROUP BY user_id
+        ORDER BY SUM(amount) DESC
+        LIMIT 10
+    """, (m.chat.id, ts))
+
     rows = cursor.fetchall()
 
     if not rows:
-        await m.answer("Пока пусто")
+        await m.answer("Сегодня активности нет")
         return
 
-    text = "🏆 Топ чата:\n\n"
+    text = "Социальный рейтинг дня в чате носа(2)\n\n"
     medals = ["🥇","🥈","🥉"]
 
-    for i, (uid, rating) in enumerate(rows, 1):
+    for i, (uid, score) in enumerate(rows, 1):
         try:
             member = await bot.get_chat_member(m.chat.id, uid)
             name = member.user.first_name
@@ -95,50 +147,46 @@ async def top(m: types.Message):
             name = "user"
 
         prefix = medals[i-1] if i <= 3 else f"{i}."
-        text += f"{prefix} {name} — {rating}\n"
+        text += f"{prefix} {name:<10} +{score}\n"
 
-    await m.answer(text)
+    await m.answer(f"<pre>{text}</pre>", parse_mode="HTML")
 
-# ---------------- REACTIONS ----------------
-@dp.message_reaction()
-async def reactions(event: types.MessageReactionUpdated):
-    logging.info("🔥 reaction received")
+# ---------------- TOP WEEK ----------------
+@dp.message(Command("topw"))
+async def top_week(m: types.Message):
 
-    if not event.user:
+    start = datetime.utcnow() - timedelta(days=7)
+    ts = int(start.timestamp())
+
+    cursor.execute("""
+        SELECT user_id, SUM(amount)
+        FROM actions
+        WHERE chat_id=? AND ts>=?
+        GROUP BY user_id
+        ORDER BY SUM(amount) DESC
+        LIMIT 10
+    """, (m.chat.id, ts))
+
+    rows = cursor.fetchall()
+
+    if not rows:
+        await m.answer("За неделю активности нет")
         return
 
-    chat_id = event.chat.id
-    voter_id = event.user.id
+    text = "Социальный рейтинг недели в чате носа(2)\n\n"
+    medals = ["🥇","🥈","🥉"]
 
-    # actor = автор сообщения
-    if not event.actor:
-        logging.info("no actor")
-        return
+    for i, (uid, score) in enumerate(rows, 1):
+        try:
+            member = await bot.get_chat_member(m.chat.id, uid)
+            name = member.user.first_name
+        except:
+            name = "user"
 
-    target_id = event.actor.id
+        prefix = medals[i-1] if i <= 3 else f"{i}."
+        text += f"{prefix} {name:<10} +{score}\n"
 
-    if voter_id == target_id:
-        return
-
-    for r in event.new_reaction:
-        emoji = r.emoji
-
-        score = 0
-        if emoji in LAUGH:
-            score = 40
-        elif emoji in HEARTS:
-            score = 10
-        elif emoji in LIKES:
-            score = 15
-        elif emoji in WOW:
-            score = 20
-        elif emoji in NEGATIVE:
-            score = -30
-
-        if score:
-            change_rating(chat_id, target_id, score)
-            logging.info(f"+{score} added")
-
+    await m.answer(f"<pre>{text}</pre>", parse_mode="HTML")
 
 # ---------------- RUN ----------------
 async def main():
@@ -147,4 +195,3 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
-
