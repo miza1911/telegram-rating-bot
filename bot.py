@@ -44,7 +44,7 @@ conn.commit()
 
 # ------------------ CONSTANTS ------------------
 MAX_PER_ACTION = 100
-RATING_PATTERN = re.compile(r"([+-])\s*(\d{1,3})")
+RATING_PATTERN = re.compile(r"(?<!\d)([+-])\s*(\d{1,3})\b")
 
 # ------------------ HELPERS ------------------
 def change_rating(chat_id, user_id, delta):
